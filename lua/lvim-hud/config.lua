@@ -3,23 +3,14 @@
 -- OVERLAY), the self-rendered command-line, the notification hub (toasts + the :Messages history), and the
 -- vim.ui.input dispatcher.
 --
--- `setup()` (lvim-hud.init) merges the user's `{ chrome = {…}, cmdline = {…}, notify = {…}, input = {…} }`
--- into the matching sub-table here IN PLACE (via lvim-utils.utils.merge); readers
--- `require("lvim-hud.config").<mod>` and see the effective values. Every component is independently
--- toggleable; every glyph is a single-width Nerd-font codepoint.
+-- `setup()` (lvim-hud.init) merges the user's `{ chrome, cmdline, notify, input }` into the matching sub-table
+-- here IN PLACE (via lvim-utils.utils.merge); readers `require("lvim-hud.config").<mod>` see the effective
+-- values. Every glyph is a real single-width Nerd-font codepoint.
 --
 ---@module "lvim-hud.config"
 
 local M = {}
 
--- Per-COMPONENT exclusion defaults for the chrome components. Each of the four (statusline / winbar / tabline /
--- statuscolumn) carries its OWN `exclude = { buftype, filetype }` blacklist, so they can be tuned
--- independently (8 lists in all). This returns a FRESH copy each call so the four don't share a table.
--- `extra_ft` appends component-specific filetypes. A buffer whose `buftype` OR `filetype` is listed gets NO
--- chrome for that component — the start dashboard (`lvim-dashboard`, a `nofile` scratch), tool panels,
--- terminals, etc.
----@param extra_ft? string[]
----@return { buftype: string[], filetype: string[] }
 local function chrome_exclude(extra_ft)
     local filetype = {
         "lvim-dashboard", -- the lvim-tech start dashboard
@@ -63,10 +54,6 @@ local function chrome_exclude(extra_ft)
     }
 end
 
--- ── chrome ──────────────────────────────────────────────────────────────────
--- The editor-chrome components — statusline, winbar, tabline, statuscolumn — and the folded transient
--- finder/echo OVERLAY. Every component is independently toggleable; icons + exclusion lists + click handlers
--- are fully configurable.
 ---@class LvimHudChromeConfig
 ---@field statusline   table  The bottom line component (enabled / segments / exclude)
 ---@field winbar       table  The per-window top line component (enabled / segments / exclude)
@@ -75,6 +62,8 @@ end
 ---@field overlay      table  The transient finder/echo overlay (enabled / show_action / show_counter / pads)
 ---@field git          table  Shared git poller (poll_ms — the .git/HEAD fs_poll interval)
 ---@field icons        table  Single-width Nerd-font glyphs for every component (mode / git / diagnostics / scrollbar / …)
+
+---@type LvimHudChromeConfig
 M.chrome = {
     -- ── statusline ────────────────────────────────────────────────────────────
     -- The bottom line, rendered by lvim-hud.chrome.engine. There are NO predefined segments (like heirline) —
@@ -118,7 +107,7 @@ M.chrome = {
         -- The top tabline, rendered by lvim-hud.chrome.engine. NO predefined sections (like heirline) — YOU
         -- define them in your config. `segments` = a LIST of specs, OR a FUNCTION returning one. Compose from
         -- chrome.parts (seg / icons / excluded / unique_name) + `engine.click_region(key, fn, text)` for
-        -- clickable window / tab CELLS. Unset ⇒ a blank tabline.
+        -- clickable window / tab CELLS (tabby's functionality). Unset ⇒ a blank tabline.
         ---@type LvimChromeSegment[]|fun(): LvimChromeSegment[]|nil
         segments = nil,
         -- this component's OWN buftype/filetype blacklist (tabline hidden when the tab holds only these). `qf` is
@@ -141,7 +130,7 @@ M.chrome = {
         exclude = chrome_exclude({ "qf" }),
     },
 
-    -- ── transient finder / echo overlay ─────────────────────────────────────────
+    -- ── transient finder / echo overlay (ex config.status) ──────────────────────
     -- A navigator / the command-line publishes a title + match counter here and the statusline DISPLAYS it,
     -- so the bottom line acts as the echo/info area. Off → each UI draws its own title in place.
     overlay = {
@@ -162,30 +151,30 @@ M.chrome = {
 
     -- ── icons (single-width Nerd-font; override any with a literal glyph) ────────
     icons = {
-        vim = "", -- mode pill leader / tabline logo
+        vim = "", -- mode pill leader / tabline logo
         folder = "󰉖", -- cwd
-        git = "", -- branch
-        commit = "", -- hunk position
+        git = "", -- branch
+        commit = "", -- hunk position
         separator = "➤", -- breadcrumb / sequence separator (➤)
-        lock = "", -- readonly
-        save = "", -- modified
+        lock = "", -- readonly
+        save = "", -- modified
         vline = "▌", -- statuscolumn git gutter bar (▌)
-        terminal = "", -- winbar terminal label
-        lsp = "", -- lsp/lint/format segment
-        unix = "",
-        dos = "",
-        mac = "",
+        terminal = "", -- winbar terminal label
+        lsp = "", -- lsp/lint/format segment
+        unix = "",
+        dos = "",
+        mac = "",
         git_status = {
-            added = "",
-            deleted = "",
-            modified = "",
+            added = "",
+            deleted = "",
+            modified = "",
         },
         diagnostics = {
-            error = "",
-            warn = "",
-            info = "",
+            error = "",
+            warn = "",
+            info = "",
             hint = "󰌵",
-            global = "",
+            global = "",
         },
         -- the 8 scrollbar block chars, tallest (top) → shortest (bottom): █▇▆▅▄▃▂▁
         scrollbar = {
@@ -201,10 +190,6 @@ M.chrome = {
     },
 }
 
--- ── cmdline ─────────────────────────────────────────────────────────────────
--- The self-rendered command-line (own float + buffer) driven by Neovim's ext_cmdline UI events. Owning the
--- buffer lets us reserve real space for a padded icon badge — impossible when decorating the built-in cmdline.
--- Opt-in via setup({ cmdline = { enable = true } }).
 ---@class LvimHudCmdlineConfig
 ---@field enable          boolean  Master switch for the self-rendered cmdline
 ---@field message         table    Routed-message display in the float (enable / glyph / hl / timeout / dismiss_keys)
@@ -218,22 +203,24 @@ M.chrome = {
 ---@field modes           table    firstc → { glyph, label, hl } per command-line mode (: / ? = @)
 ---@field fallback        table    { glyph, label, hl } used when no mode entry matches
 ---@field patterns        table[]  Content sub-modes for ":" commands (first match wins), each mode entry + a `match`
+
+---@type LvimHudCmdlineConfig
 M.cmdline = {
     enable = false,
     -- Messages routed here (via notify ext_kinds -> "cmdline") are shown in the float.
     -- Configure which kinds in the host's notify.ext_kinds (e.g. lua_print = "cmdline").
     message = {
         enable = true,
-        glyph = "",
+        glyph = "",
         hl = "LvimUiCmdlineInput",
         timeout = 0, -- 0 = persist until a dismiss key; >0 = auto-hide after N ms
         -- Keys that clear a persistent message (Vim notation; "esc" accepted). List.
         dismiss_keys = { "<Esc>" },
     },
     -- Statusline integration (default on): publish the cmdline MODE (label + glyph) and the completion
-    -- match counter to the bottom statusline (lvim-hud.chrome.overlay), so the line shows the current action
-    -- like the navigator. The float then keeps only the glyph as a compact prompt prefix (the static label
-    -- moves to the statusline). false = keep the full mode label badge in the float, nothing in the statusline.
+    -- match counter to the bottom statusline (lvim-hud.chrome.overlay), so the line shows the current action like
+    -- the navigator. The float then keeps only the glyph as a compact prompt prefix (the static label moves
+    -- to the statusline). false = keep the full mode label badge in the float, nothing in the statusline.
     statusline = true,
     -- The float's mode badge padding (when the badge is shown in the float — i.e. `statusline = false`, or
     -- an input() prompt). Independent spaces left of / right of the glyph (the gap to the label / text).
@@ -253,27 +240,24 @@ M.cmdline = {
     -- firstc -> { glyph, label, hl }. The left panel shows " <glyph> <label> "; for the
     -- input mode (@) the live prompt (e.g. "New name: ") is used instead of the label.
     modes = {
-        [":"] = { glyph = "", label = "Command", hl = "LvimUiCmdlineCommand" },
-        ["/"] = { glyph = "", label = "Search ↓ down", hl = "LvimUiCmdlineSearch" },
-        ["?"] = { glyph = "", label = "Search ↑ up", hl = "LvimUiCmdlineSearch" },
-        ["="] = { glyph = "", label = "Expr", hl = "LvimUiCmdlineEval" },
-        ["@"] = { glyph = "", label = "", hl = "LvimUiCmdlineInput" },
+        [":"] = { glyph = "", label = "Command", hl = "LvimUiCmdlineCommand" },
+        ["/"] = { glyph = "", label = "Search ↓ down", hl = "LvimUiCmdlineSearch" },
+        ["?"] = { glyph = "", label = "Search ↑ up", hl = "LvimUiCmdlineSearch" },
+        ["="] = { glyph = "", label = "Expr", hl = "LvimUiCmdlineEval" },
+        ["@"] = { glyph = "", label = "", hl = "LvimUiCmdlineInput" },
     },
-    fallback = { glyph = "", label = "", hl = "LvimUiCmdlineCommand" },
+    fallback = { glyph = "", label = "", hl = "LvimUiCmdlineCommand" },
     -- Content sub-modes for ":" commands (first match wins). Each is like a mode
     -- entry plus a Lua-pattern `match` tested against the typed command text.
     patterns = {
-        { match = "^lua[ =]", strip = "^lua%s*=?%s*", glyph = "", label = "Lua", hl = "LvimUiCmdlineLua" },
-        { match = "^=", strip = "^=%s*", glyph = "", label = "Expr", hl = "LvimUiCmdlineEval" },
-        { match = "^!", strip = "^!%s*", glyph = "", label = "Shell", hl = "LvimUiCmdlineShell" },
-        { match = "^%S*s/", glyph = "", label = "Substitute", hl = "LvimUiCmdlineSubstitute" },
-        { match = "^setl?%a* ", strip = "^set%a*%s+", glyph = "", label = "Set", hl = "LvimUiCmdlineSet" },
+        { match = "^lua[ =]", strip = "^lua%s*=?%s*", glyph = "", label = "Lua", hl = "LvimUiCmdlineLua" },
+        { match = "^=", strip = "^=%s*", glyph = "", label = "Expr", hl = "LvimUiCmdlineEval" },
+        { match = "^!", strip = "^!%s*", glyph = "", label = "Shell", hl = "LvimUiCmdlineShell" },
+        { match = "^%S*s/", glyph = "", label = "Substitute", hl = "LvimUiCmdlineSubstitute" },
+        { match = "^setl?%a* ", strip = "^set%a*%s+", glyph = "", label = "Set", hl = "LvimUiCmdlineSet" },
     },
 }
 
--- ── notify ──────────────────────────────────────────────────────────────────
--- The notification hub — the toast/history model, panel geometry + separators, print()/message interception
--- (ext_messages), per-kind routing, level icons/names, and the :Messages history zone with its filter bar.
 ---@class LvimHudNotifyConfig
 ---@field max_history       integer  Ring-buffer size for M.history()
 ---@field timeout           integer  Auto-dismiss delay in ms; 0 = sticky
@@ -296,6 +280,8 @@ M.cmdline = {
 ---@field icons             table<string, string> Level icons
 ---@field level_names       table<string, string> Singular/plural level names shown in the header bar
 ---@field history           table    The :Messages history zone + its filter bar
+
+---@type LvimHudNotifyConfig
 M.notify = {
     -- Ring-buffer size for M.history()
     max_history = 100,
@@ -354,13 +340,13 @@ M.notify = {
     progress_width = nil,
     -- Level icons
     icons = {
-        trace = "",
-        debug = "",
-        error = "",
-        warn = "",
-        info = "",
-        hint = "",
-        progress = "",
+        trace = "",
+        debug = "",
+        error = "",
+        warn = "",
+        info = "",
+        hint = "",
+        progress = "",
     },
     -- Singular/plural level names shown in the header bar
     level_names = {
@@ -402,12 +388,11 @@ M.notify = {
     },
 }
 
--- ── input ───────────────────────────────────────────────────────────────────
--- The input dispatcher — routes vim.ui.input to either the self-rendered command-line or the popup
--- (lvim-ui). Per-call control via the `ui` field on the opts, a one-shot route_next(), or this default.
 ---@class LvimHudInputConfig
 ---@field enable  boolean  Master switch for the input dispatcher
 ---@field default string   Default target when neither opts.ui nor route_next() is set: "cmdline" | "popup"
+
+---@type LvimHudInputConfig
 M.input = {
     enable = false,
     -- Default target when neither opts.ui nor route_next() is set: "cmdline" | "popup".
