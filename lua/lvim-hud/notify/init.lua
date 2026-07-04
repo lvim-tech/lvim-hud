@@ -1516,6 +1516,12 @@ function M.setup(user_cfg)
         _attach_ui()
     end
 
+    -- Register `:LvimMessages` so setup() gives it (like the other plugins' :Lvim* commands) — it browses the
+    -- captured notification / message log (in the msgarea zone when installed, else the cmdline pager).
+    pcall(vim.api.nvim_create_user_command, "LvimMessages", function()
+        M.history()
+    end, { desc = "lvim-hud: browse captured notifications / messages" })
+
     _initialized = true
 end
 
