@@ -1,0 +1,124 @@
+*lvim-hud.txt*                        The editor periphery (HUD) of the lvim-tech set
+
+==============================================================================
+CONTENTS                                                      *lvim-hud-contents*
+
+    1. Introduction ......................... |lvim-hud-introduction|
+    2. Requirements ......................... |lvim-hud-requirements|
+    3. Installation ......................... |lvim-hud-installation|
+    4. Usage ................................ |lvim-hud-usage|
+    5. Components ........................... |lvim-hud-components|
+    6. Configuration ........................ |lvim-hud-configuration|
+
+==============================================================================
+1. INTRODUCTION                                           *lvim-hud-introduction*
+
+lvim-hud is the editor HUD (heads-up display) — everything on screen that is NOT
+the text buffer, in one plugin:
+
+- chrome  : the statusline, winbar, tabline and statuscolumn components (a
+            segment engine you drive from your own config) + a transient
+            finder/echo overlay that turns the bottom line into the echo area.
+- cmdline : a self-rendered command-line (the built-in cmdline externalised via
+            ext_cmdline and drawn in an owned float + buffer, so a padded,
+            coloured mode badge can precede the text).
+- notify  : the notification hub — intercepts vim.notify (and optionally print),
+            routes messages through pluggable printers, ships per-severity toast
+            panels and a browsable :Messages history.
+- input   : a vim.ui.input dispatcher (routes each prompt to the cmdline or a
+            styled popup, per call).
+
+==============================================================================
+2. REQUIREMENTS                                           *lvim-hud-requirements*
+
+- Neovim >= 0.12.x
+- lvim-utils (base: utils / colors / highlight / cursor)
+- lvim-ui (the notify toasts and the input popup build on its float toolkit)
+- optional: lvim-msgarea — when present the cmdline docks into the unified
+  message zone and :Messages browses the log inside it. lvim-hud never depends
+  on it; lvim-msgarea registers itself with the cmdline/notify seams.
+
+==============================================================================
+3. INSTALLATION                                           *lvim-hud-installation*
+
+lvim-installer (recommended): >vim
+    :LvimInstaller plugins
+<
+Native (vim.pack): >lua
+    vim.pack.add({
+        { src = "https://github.com/lvim-tech/lvim-utils" },
+        { src = "https://github.com/lvim-tech/lvim-ui" },
+        { src = "https://github.com/lvim-tech/lvim-hud" },
+    })
+    require("lvim-hud").setup({})
+<
+==============================================================================
+4. USAGE                                                         *lvim-hud-usage*
+
+setup() activates the periphery. notify and chrome are ON by default; cmdline and
+input are opt-in (set their `enable`). Pass `notify = false` / `chrome = false` to
+opt a component out entirely. The chrome components render nothing until you give
+them `segments` — a list of segment specs, or a function returning one (see
+lvim-hud.chrome.engine and the chrome.parts / chrome.utils / chrome.gutter
+helpers). >lua
+    require("lvim-hud").setup({
+        cmdline = { enable = true },
+        input = { enable = true },
+        chrome = {
+            statusline = { segments = function() return {} end },
+        },
+    })
+<
+The submodules are re-exported through the aggregate: >lua
+    require("lvim-hud").notify.history()   -- open the :Messages log
+    require("lvim-hud").chrome              -- the chrome engine + components
+    require("lvim-hud").cmdline
+    require("lvim-hud").input.route_next("popup")
+<
+==============================================================================
+5. COMPONENTS                                               *lvim-hud-components*
+
+chrome ~
+    Four segment-driven components (statusline / winbar / tabline /
+    statuscolumn), each independently toggleable with its own buftype/filetype
+    exclusion list. You define the `segments` (a list of specs, or a function
+    returning one); each spec is
+    `{ name, content = fn(ctx) -> str, hl?, when?, events?, click?, buf?, align? }`.
+    The transient OVERLAY lets a navigator / the cmdline publish a title + match
+    counter to the bottom line (the echo/info model).
+
+cmdline ~
+    The externalised command-line. Opt-in (`cmdline.enable = true`). Owns its
+    float + buffer so a padded mode badge (` <icon> Command `) precedes the text;
+    per-mode glyphs/labels/colours and `:`-content sub-modes (lua / expr / shell
+    / substitute / set) are configurable.
+
+notify ~
+    Intercepts vim.notify (and print when `override_print`), routes each message
+    by kind (`ext_kinds`: toast / history / ignore), stacks per-severity toast
+    panels, and keeps a ring-buffer history browsable via >lua
+        require("lvim-hud").notify.history()
+<   With lvim-msgarea installed the history browses inside the message zone.
+
+input ~
+    A vim.ui.input dispatcher. Opt-in (`input.enable = true`). Resolution order
+    per prompt: route_next() one-shot -> opts.ui ("cmdline"|"popup") ->
+    `input.default`.
+
+==============================================================================
+6. CONFIGURATION                                       *lvim-hud-configuration*
+
+                                                              *lvim-hud.setup()*
+require("lvim-hud").setup({opts})
+
+Merges {opts} into the live config in place — each of `chrome` / `cmdline` /
+`notify` / `input` merges into its own subtable (a shorter override list REPLACES
+the default wholesale). A component set to `false` opts out entirely; nil
+activates it with defaults (subject to the component's own `enable` flag for
+cmdline/input). Optional — the defaults work as-is.
+
+See the README for the FULL default config; the option set is documented as
+`LvimHudChromeConfig` / `LvimHudCmdlineConfig` / `LvimHudNotifyConfig` /
+`LvimHudInputConfig` in `lua/lvim-hud/config.lua`.
+
+vim:tw=78:ts=8:ft=help:norl:
