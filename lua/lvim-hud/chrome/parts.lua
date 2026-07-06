@@ -142,7 +142,7 @@ function M.devicon(buf, bar_bg)
         return nil
     end
     local ext = vim.fn.fnamemodify(name, ":e")
-    local r = iconlib.get(name, { provider = M.cfg().icon_provider })
+    local r = iconlib.get(name, { provider = M.cfg().icon_provider, color_mode = M.cfg().icon_color_mode })
     local icon, color = r.glyph, r.color
     if not icon or icon == "" then
         return nil

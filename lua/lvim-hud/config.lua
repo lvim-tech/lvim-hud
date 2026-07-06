@@ -63,12 +63,16 @@ end
 ---@field git          table  Shared git poller (poll_ms — the .git/HEAD fs_poll interval)
 ---@field icons        table  Single-width Nerd-font glyphs for every component (mode / git / diagnostics / scrollbar / …)
 ---@field icon_provider "auto"|"lvim"|"devicons"|"mini"  Which plugin provides the file devicon (via lvim-utils.icons)
+---@field icon_color_mode string?  lvim-icons colour mode for the devicon: "theme"|"brand"|"theme_brand"; nil = the lvim-icons global default
 
 ---@type LvimHudChromeConfig
 M.chrome = {
     -- Which icon plugin supplies the per-file devicon (resolved through lvim-utils.icons):
     -- "auto" prefers lvim-icons, then nvim-web-devicons, then mini.icons, else a built-in glyph.
     icon_provider = "auto",
+    -- lvim-icons colour mode for the devicon (ignored by devicons/mini): "theme" follows the
+    -- colorscheme, "brand" the real brand hue, "theme_brand" a mix. nil = lvim-icons' own default.
+    icon_color_mode = nil,
     -- ── statusline ────────────────────────────────────────────────────────────
     -- The bottom line, rendered by lvim-hud.chrome.engine. There are NO predefined segments (like heirline) —
     -- YOU define them all in your config. `segments` is a LIST of specs, OR a FUNCTION returning one (resolved
