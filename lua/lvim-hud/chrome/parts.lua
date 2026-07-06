@@ -10,6 +10,7 @@
 
 local api = vim.api
 local config = require("lvim-hud.config")
+local iconlib = require("lvim-utils.icons")
 
 local M = {}
 
@@ -127,8 +128,10 @@ function M.excluded(buf, kind)
         or vim.tbl_contains(ex.filetype or {}, vim.bo[buf].filetype)
 end
 
---- The devicon for `buf` + a per-extension highlight group carrying its colour on the bar bg. Returns nil
---- when devicons is unavailable or the buffer is unnamed.
+--- The file icon for `buf` + a per-extension highlight group carrying its colour on the bar bg. Returns nil
+--- when the buffer is unnamed or the resolved glyph is empty. The icon comes from the configured
+--- `icon_provider` (lvim-icons / nvim-web-devicons / mini.icons, resolved via lvim-utils.icons); the colour
+--- is that provider's resolved hex.
 ---@param buf? integer
 ---@param bar_bg? string  the bar background hex (so the icon sits on the bar, not its own bg)
 ---@return string? icon, string? group
@@ -138,13 +141,10 @@ function M.devicon(buf, bar_bg)
     if name == "" then
         return nil
     end
-    local ok, dev = pcall(require, "nvim-web-devicons")
-    if not ok then
-        return nil
-    end
     local ext = vim.fn.fnamemodify(name, ":e")
-    local icon, color = dev.get_icon_color(name, ext, { default = true })
-    if not icon then
+    local r = iconlib.get(name, { provider = M.cfg().icon_provider })
+    local icon, color = r.glyph, r.color
+    if not icon or icon == "" then
         return nil
     end
     local group = "LvimUiChromeDevicon_" .. (ext ~= "" and ext or "none")

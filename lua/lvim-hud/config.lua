@@ -62,9 +62,13 @@ end
 ---@field overlay      table  The transient finder/echo overlay (enabled / show_action / show_counter / pads)
 ---@field git          table  Shared git poller (poll_ms — the .git/HEAD fs_poll interval)
 ---@field icons        table  Single-width Nerd-font glyphs for every component (mode / git / diagnostics / scrollbar / …)
+---@field icon_provider "auto"|"lvim"|"devicons"|"mini"  Which plugin provides the file devicon (via lvim-utils.icons)
 
 ---@type LvimHudChromeConfig
 M.chrome = {
+    -- Which icon plugin supplies the per-file devicon (resolved through lvim-utils.icons):
+    -- "auto" prefers lvim-icons, then nvim-web-devicons, then mini.icons, else a built-in glyph.
+    icon_provider = "auto",
     -- ── statusline ────────────────────────────────────────────────────────────
     -- The bottom line, rendered by lvim-hud.chrome.engine. There are NO predefined segments (like heirline) —
     -- YOU define them all in your config. `segments` is a LIST of specs, OR a FUNCTION returning one (resolved
