@@ -677,12 +677,25 @@ local _sinks = {}
 local _in_dispatch = false
 
 local function _dispatch(msg, level, opts)
+    if vim.in_fast_event() then
+        return vim.schedule(function()
+            _dispatch(msg, level, opts)
+        end)
+    end
     if _in_dispatch then
         return
     end
     _in_dispatch = true
     for _, p in ipairs(_printers) do
-        pcall(p.fn, msg, level, opts)
+        local ok, err = pcall(p.fn, msg, level, opts)
+        if not ok then
+            pcall(
+                vim.api.nvim_echo,
+                { { "lvim-hud notify printer failed: " .. tostring(err), "WarningMsg" } },
+                true,
+                {}
+            )
+        end
     end
     _in_dispatch = false
 end
