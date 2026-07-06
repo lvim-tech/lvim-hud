@@ -42,23 +42,37 @@ end
 local _shown = nil
 ---@type string?
 local _cand = nil
+-- Consecutive confirm mismatches. Capped so a segment that ALTERNATES between two strings (never stable
+-- twice) can't self-sustain a scheduled-redraw loop with the tabline frozen on `_shown`.
+---@type integer
+local _tries = 0
+local MAX_TRIES = 3
 
 --- The `%!`-evaluated tabline string. The engine renders the config's sections.
 ---@return string
 function M.render()
+    -- Sweep dead per-cell click closures (keyed by window/tab ids) before the segments re-register the live
+    -- ones this render — else the registry grows unboundedly for the session.
+    engine.reset_cell_clicks()
     local win = api.nvim_get_current_win()
     ---@type LvimChromeCtx
     local ctx = { buf = api.nvim_win_get_buf(win), win = win }
     local fresh = inst.render(active_segments(), ctx)
     if _shown == nil or fresh == _shown then
-        _shown, _cand = fresh, nil
+        _shown, _cand, _tries = fresh, nil, 0
         return fresh
     end
     if fresh == _cand then
-        _shown, _cand = fresh, nil -- stable across two evals → commit the change
+        _shown, _cand, _tries = fresh, nil, 0 -- stable across two evals → commit the change
         return fresh
     end
-    -- changed, possibly a transient: keep the last committed bar, re-check next tick.
+    -- Changed, possibly a transient: keep the last committed bar, re-check next tick. But cap the retries so
+    -- a flip-flopping segment (A,B,A,B…) commits unconditionally after MAX_TRIES instead of looping forever.
+    _tries = _tries + 1
+    if _tries >= MAX_TRIES then
+        _shown, _cand, _tries = fresh, nil, 0
+        return fresh
+    end
     _cand = fresh
     vim.schedule(function()
         pcall(vim.cmd, "redrawtabline")

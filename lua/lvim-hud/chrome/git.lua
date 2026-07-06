@@ -1,13 +1,13 @@
 -- lvim-hud.chrome.git: a background git-HEAD poller for the chrome statusline / tabline.
 --
--- Reads branch + abbreviated SHA + full OID + last commit subject + tag info via the git CLI, caches the
--- result, and refreshes it through a libuv fs_poll watching `<root>/.git/HEAD` — so the statusline reads
--- git data SYNCHRONOUSLY without ever blocking the UI. One shared instance; started on VimEnter / DirChanged.
--- Ported 1:1 from the user's heirline git poller (`_G.LVIM.git` → a module-local cache).
+-- Reads branch + abbreviated SHA + full OID + last commit subject + tag info via the git CLI (ASYNCHRONOUSLY,
+-- through non-blocking `vim.system`), caches the result, and refreshes it through a libuv fs_poll watching
+-- `<root>/.git/HEAD` — so the statusline reads git data synchronously FROM THE CACHE while every git fork
+-- happens off the UI thread. One shared instance; started on VimEnter / DirChanged.
 --
 ---@module "lvim-hud.chrome.git"
 
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 
 local M = {}
 
@@ -30,102 +30,124 @@ function M.get()
     return cache
 end
 
---- Run a shell command and return its single trimmed line, or nil on empty / git error output.
----@param cmd string
----@return string?
-local function safe(cmd)
-    local result = vim.fn.system(cmd .. " 2>/dev/null")
-    if type(result) == "string" and result ~= "" then
-        result = result:gsub("\n$", "")
-        if result:match("^(fatal:|error:)") then
-            return nil
-        end
-        return result
+--- Run one git subcommand asynchronously (never blocks the UI thread) and hand its trimmed stdout — or nil on
+--- a non-zero exit / spawn failure — to `cb`. `cb` runs on the libuv thread; callers marshal to the main loop.
+---@param root string  the repository root (cwd for the child)
+---@param args string[]  the git argv (WITHOUT the leading "git")
+---@param cb fun(out: string?)
+local function git_async(root, args, cb)
+    local ok = pcall(vim.system, { "git", unpack(args) }, { cwd = root, text = true }, function(res)
+        cb((res.code == 0 and type(res.stdout) == "string" and res.stdout ~= "") and vim.trim(res.stdout) or nil)
+    end)
+    if not ok then
+        cb(nil)
     end
-    return nil
 end
 
---- The path to `.git/HEAD` and the repository root for the cwd, or nil when not in a repo.
----@return string?  head_path
----@return string?  root
-local function head_path()
-    local root = safe("git rev-parse --show-toplevel")
-    if root and root ~= "" then
-        return root .. "/.git/HEAD", root
-    end
-    return nil
-end
-
---- Query git for branch / commit / tag info and write it to the cache.
+--- Refresh the cache for `root` in the BACKGROUND — three non-blocking `vim.system` git calls (log for
+--- abbrev/oid/subject, rev-parse for the branch, describe for the tag) — then, from the final scheduled
+--- callback, write the cache and fire `User LvimUiChromeGit` so the chrome statusline invalidates + repaints.
 ---@param root string
 function M.update(root)
-    local branch = safe("git rev-parse --abbrev-ref HEAD") or "unknown"
-    local detached = (branch == "HEAD")
-    local abbrev = safe("git rev-parse --short HEAD") or "unknown"
-    local oid = safe("git rev-parse HEAD") or "unknown"
-    local commit_message = safe("git log -1 --pretty=%s") or "no commit message"
-
-    -- "git describe" output: <tag>-<distance>-g<short-oid>
-    local tag_info = safe("git describe --tags --long --always") or ""
-    local tag_name, tag_distance, tag_oid = nil, nil, nil
-    if tag_info ~= "" then
-        tag_name, tag_distance, tag_oid = tag_info:match("^(.-)%-(%d+)%-g(%x+)$")
-        if not tag_name then
-            tag_name, tag_distance, tag_oid = tag_info, 0, abbrev
-        end
-    end
-
-    cache = {
-        root = root,
-        head = {
-            branch = branch,
-            abbrev = abbrev,
-            oid = oid,
-            commit_message = commit_message,
-            detached = detached,
-            tag = { name = tag_name, distance = tonumber(tag_distance), oid = tag_oid },
-        },
-    }
-    -- Signal the chrome statusline to invalidate its git/hunks cache (heirline-style: an event drives the
-    -- re-eval). The poller's own redrawstatus then repaints from the now-fresh data.
-    pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "LvimUiChromeGit", modeline = false })
-end
-
---- Start (or restart) the poller for the cwd. Clears the cache + stops the poller outside a repo; otherwise
---- updates immediately and watches `.git/HEAD`, refreshing only when its mtime changes.
----@param interval? integer  poll interval in ms (default 1000)
-function M.start(interval)
-    local path, root = head_path()
-    if not path or not root then
-        cache = nil
-        if poller then
-            poller:stop()
-            poller:close()
-            poller = nil
-        end
-        return
-    end
-
-    M.update(root)
-
-    if poller then
-        poller:stop()
-        poller:close()
-        poller = nil
-    end
-
-    poller = uv.new_fs_poll()
-    poller:start(path, interval or 1000, function(err, prev, now)
-        if err then
+    local pending, log_out, branch_out, desc_out = 3, nil, nil, nil
+    local function done()
+        pending = pending - 1
+        if pending > 0 then
             return
         end
-        if prev and now and prev.mtime.sec ~= now.mtime.sec then
-            vim.schedule(function()
-                M.update(root)
-                pcall(vim.cmd, "redrawstatus")
-            end)
-        end
+        vim.schedule(function()
+            local abbrev, oid, commit_message = "unknown", "unknown", "no commit message"
+            if log_out and log_out ~= "" then
+                local l = vim.split(log_out, "\n", { plain = true })
+                abbrev = (l[1] and l[1] ~= "") and l[1] or "unknown"
+                oid = (l[2] and l[2] ~= "") and l[2] or "unknown"
+                commit_message = (l[3] and l[3] ~= "") and l[3] or "no commit message"
+            end
+            local branch = (branch_out and branch_out ~= "") and branch_out or "unknown"
+            local detached = (branch == "HEAD")
+
+            -- "git describe" output: <tag>-<distance>-g<short-oid>
+            local tag_info = desc_out or ""
+            local tag_name, tag_distance, tag_oid = nil, nil, nil
+            if tag_info ~= "" then
+                tag_name, tag_distance, tag_oid = tag_info:match("^(.-)%-(%d+)%-g(%x+)$")
+                if not tag_name then
+                    tag_name, tag_distance, tag_oid = tag_info, 0, abbrev
+                end
+            end
+
+            cache = {
+                root = root,
+                head = {
+                    branch = branch,
+                    abbrev = abbrev,
+                    oid = oid,
+                    commit_message = commit_message,
+                    detached = detached,
+                    tag = { name = tag_name, distance = tonumber(tag_distance), oid = tag_oid },
+                },
+            }
+            -- Signal the chrome statusline to invalidate its git/hunks cache (heirline-style: an event drives
+            -- the re-eval). The poller's own redrawstatus then repaints from the now-fresh data.
+            pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "LvimUiChromeGit", modeline = false })
+        end)
+    end
+    git_async(root, { "log", "-1", "--format=%h%n%H%n%s" }, function(o)
+        log_out = o
+        done()
     end)
+    git_async(root, { "rev-parse", "--abbrev-ref", "HEAD" }, function(o)
+        branch_out = o
+        done()
+    end)
+    git_async(root, { "describe", "--tags", "--long", "--always" }, function(o)
+        desc_out = o
+        done()
+    end)
+end
+
+--- Start (or restart) the poller for the cwd — resolving the repo root ASYNCHRONOUSLY. Clears the cache +
+--- stops the poller outside a repo; otherwise refreshes and watches `.git/HEAD`, updating only on mtime change.
+---@param interval? integer  poll interval in ms (default 1000)
+function M.start(interval)
+    local ok = pcall(vim.system, { "git", "rev-parse", "--show-toplevel" }, { text = true }, function(res)
+        local root = (res.code == 0 and type(res.stdout) == "string") and vim.trim(res.stdout) or nil
+        vim.schedule(function()
+            if not root or root == "" then
+                cache = nil
+                if poller then
+                    poller:stop()
+                    poller:close()
+                    poller = nil
+                end
+                return
+            end
+
+            M.update(root)
+
+            if poller then
+                poller:stop()
+                poller:close()
+                poller = nil
+            end
+
+            poller = uv.new_fs_poll()
+            poller:start(root .. "/.git/HEAD", interval or 1000, function(err, prev, now)
+                if err then
+                    return
+                end
+                if prev and now and prev.mtime.sec ~= now.mtime.sec then
+                    vim.schedule(function()
+                        M.update(root)
+                        pcall(vim.cmd, "redrawstatus")
+                    end)
+                end
+            end)
+        end)
+    end)
+    if not ok then
+        cache = nil
+    end
 end
 
 return M

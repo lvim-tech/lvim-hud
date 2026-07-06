@@ -126,6 +126,10 @@ local _panels = {}
 local _prog_channels = {}
 -- Insertion order: first registered = lowest in the stack (closest to bottom edge).
 local _prog_order = {}
+-- Last global panel width committed by _rebuild_all — lets progress_update skip the full uniform rebuild when
+-- the width is unchanged (the common case on a $/progress burst) and re-render only the changed channel.
+---@type integer?
+local _last_global_w = nil
 
 -- ── helpers ───────────────────────────────────────────────────────────────
 
@@ -273,6 +277,13 @@ local function _rebuild_panel(level, win_w)
     local h = #all_lines
     local buf = p.buf
     local win = p.win
+    -- The scratch buffer can be wiped out from under us (e.g. an external :bwipeout!) between renders; writing
+    -- to an invalid buffer throws out of a TTL defer_fn / progress tick. Treat the panel as dead and drop it
+    -- (a fresh toast recreates it) instead of erroring.
+    if not api.nvim_buf_is_valid(buf) then
+        _close_panel(level)
+        return
+    end
     local win_col = math.max(0, vim.o.columns - win_w - 1)
 
     api.nvim_set_option_value("modifiable", true, { buf = buf })
@@ -416,7 +427,12 @@ local function _render_prog_channel(id, win_w)
     local h = #all_lines
     local win_col = math.max(0, vim.o.columns - win_w - 1)
 
-    if not ch.win or not api.nvim_win_is_valid(ch.win) then
+    -- Recreate when the window OR its scratch buffer is gone (an external :bwipeout! can wipe the buffer,
+    -- leaving a stale window); close any stale window first so a fresh one doesn't orphan it.
+    if not ch.win or not api.nvim_win_is_valid(ch.win) or not ch.buf or not api.nvim_buf_is_valid(ch.buf) then
+        if ch.win and api.nvim_win_is_valid(ch.win) then
+            api.nvim_win_close(ch.win, true)
+        end
         local buf = api.nvim_create_buf(false, true)
         api.nvim_set_option_value("filetype", "lvim-utils-notify", { buf = buf })
         local win = api.nvim_open_win(buf, false, {
@@ -500,6 +516,7 @@ end
 --- Master rebuild: one global width for ALL panels (notify levels + progress channels).
 _rebuild_all = function()
     local win_w = _global_max_w()
+    _last_global_w = win_w
     for _, lvl in ipairs(PANEL_ORDER) do
         if _panels[lvl] then
             _rebuild_panel(lvl, win_w)
@@ -555,7 +572,16 @@ local function _show_toast(msg, level, opts)
     local min_w = _cfg.min_width or 36
     local available = max_w - pad * 2
     local msg_lines = wrap(msg, available)
-    local timeout = (opts.timeout ~= nil) and opts.timeout or (_cfg.timeout or 4000)
+    -- `timeout = false` is the sticky convention (a toast that never auto-dismisses); it maps to 0 (0 already
+    -- means "no timer" below). A plain `and/or` would let false fall through to the default — so branch it.
+    local timeout
+    if opts.timeout == false then
+        timeout = 0
+    elseif opts.timeout ~= nil then
+        timeout = opts.timeout
+    else
+        timeout = _cfg.timeout or 4000
+    end
 
     -- (Re)render an entry's buffer lines + marks + natural width. A `×N` badge is shown
     -- when the same toast has been collapsed more than once (see dedup below). Also
@@ -604,7 +630,9 @@ local function _show_toast(msg, level, opts)
     -- Create panel for this level if needed.
     -- Initial width uses natural_w; _rebuild will widen it when more entries arrive.
     if not _panels[level] or not api.nvim_win_is_valid(_panels[level].win) then
-        _panels[level] = nil
+        -- An externally-closed toast window leaves a stale panel with a still-valid bufhidden=hide buffer;
+        -- _close_panel deletes that buffer (and closes the win if any) instead of orphaning it on a bare nil.
+        _close_panel(level)
         local buf = api.nvim_create_buf(false, true)
         local win_col = math.max(0, vim.o.columns - entry.natural_w - 1)
         api.nvim_set_option_value("filetype", "lvim-utils-notify", { buf = buf })
@@ -848,7 +876,18 @@ function M.progress_update(id, lines, marks)
         nw = math.max(nw, dw(l))
     end
     ch.natural_w = math.min(max_w, nw + (_cfg.padding or 1) * 2)
-    _rebuild_all()
+    -- Fast path: when the GLOBAL panel width is unchanged (the common case on a $/progress burst — many ticks
+    -- per second), only THIS channel's content changed, so re-render just it + restack the stack geometry
+    -- instead of rewriting every open toast panel's buffer. A width change (a new widest line, or the first
+    -- channel) falls back to the full uniform rebuild (which re-caches _last_global_w).
+    local w = _global_max_w()
+    if _last_global_w ~= nil and w == _last_global_w then
+        _render_prog_channel(id, w)
+        _restack()
+        flush_redraw()
+    else
+        _rebuild_all()
+    end
 end
 
 --- Clear content for a named progress channel and close its panel.
@@ -861,7 +900,18 @@ function M.progress_clear(id)
     ch.lines = nil
     ch.marks = nil
     ch.natural_w = nil
+    -- The rebuild first closes this channel's now-empty window/buffer (_render_prog_channel with no lines);
+    -- then prune the id from BOTH registries so dynamic (per-operation / LSP-token) ids can't accumulate
+    -- unboundedly — later rebuilds/width scans no longer iterate the dead channel. register/update recreate
+    -- cheaply, so no tombstone is needed.
     _rebuild_all()
+    _prog_channels[id] = nil
+    for i, v in ipairs(_prog_order) do
+        if v == id then
+            table.remove(_prog_order, i)
+            break
+        end
+    end
 end
 
 --- Clear all progress channels and close all their panels.
@@ -872,6 +922,9 @@ function M.progress_clear_all()
         ch.natural_w = nil
     end
     _rebuild_all()
+    -- Prune every (now-closed) channel from both registries, same rationale as progress_clear.
+    _prog_channels = {}
+    _prog_order = {}
 end
 
 -- ── history window ────────────────────────────────────────────────────────

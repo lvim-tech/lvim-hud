@@ -70,13 +70,39 @@ function M.diag_icon(hl)
         or di.global
 end
 
+-- One-frame memo for the merged (global + buffer) mark list: the statuscolumn evaluates mark_letter once PER
+-- SCREEN LINE per redraw, and each call otherwise forks TWO getmarklist() VimL lookups. Cache them for the
+-- buffer and clear on the next event-loop tick (vim.schedule), so every line of one synchronous redraw shares
+-- a single pair of lookups; a later redraw (after any mark change) rebuilds them.
+---@type { buf: integer, list: table[] }?
+local _mark_memo = nil
+local _mark_memo_clear = false
+
+--- The merged global + buffer mark list for `buf`, memoized for the current redraw frame.
+---@param buf integer
+---@return table[]
+local function mark_list(buf)
+    if _mark_memo and _mark_memo.buf == buf then
+        return _mark_memo.list
+    end
+    local list = vim.list_extend(vim.fn.getmarklist(), vim.fn.getmarklist(buf))
+    _mark_memo = { buf = buf, list = list }
+    if not _mark_memo_clear then
+        _mark_memo_clear = true
+        vim.schedule(function()
+            _mark_memo = nil
+            _mark_memo_clear = false
+        end)
+    end
+    return list
+end
+
 --- The mark letter sitting on `buf` line `lnum`, or "".
 ---@param buf integer
 ---@param lnum integer
 ---@return string
 function M.mark_letter(buf, lnum)
-    local marks = vim.list_extend(vim.fn.getmarklist(), vim.fn.getmarklist(buf))
-    for _, m in ipairs(marks) do
+    for _, m in ipairs(mark_list(buf)) do
         local letter = m.mark:match("^[`']?([a-zA-Z])$")
         if letter and m.pos[1] == buf and m.pos[2] == lnum then
             return letter

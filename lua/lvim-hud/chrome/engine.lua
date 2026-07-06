@@ -56,14 +56,18 @@ local function hl_group(hl, ctx)
     if type(hl) == "string" then
         return hl
     end
-    local key = table.concat({
-        hl.fg or "",
-        hl.bg or "",
-        tostring(hl.bold),
-        tostring(hl.italic),
-        tostring(hl.underline),
-        tostring(hl.reverse),
-    }, "|")
+    -- Full-spec cache key: a deterministic sorted-pairs serialization of EVERY field, so specs that differ
+    -- only in sp / undercurl / strikethrough / etc. don't collide onto one cached group.
+    local keys = {}
+    for k in pairs(hl) do
+        keys[#keys + 1] = k
+    end
+    table.sort(keys)
+    local kv = {}
+    for _, k in ipairs(keys) do
+        kv[#kv + 1] = k .. "=" .. tostring(hl[k])
+    end
+    local key = table.concat(kv, "|")
     local name = dyn_groups[key]
     if not name then
         dyn_n = dyn_n + 1
@@ -126,6 +130,17 @@ function M.click_region(key, fn, text)
     local id = CELL_BASE + key
     click_runs[id] = fn
     return ("%%%d@v:lua.require'lvim-hud.chrome.engine'.on_click@%s%%X"):format(id, text)
+end
+
+--- Drop ALL per-cell click registrations (ids >= CELL_BASE). The tabline (the sole per-cell consumer) calls
+--- this at the START of each render so closures keyed by monotonic window ids don't accumulate for dead
+--- windows across the session — every live cell re-registers its (stable per-cell) id in the same render.
+function M.reset_cell_clicks()
+    for id in pairs(click_runs) do
+        if id >= CELL_BASE then
+            click_runs[id] = nil
+        end
+    end
 end
 
 -- ── build one segment's final string (stateless) ─────────────────────────────────────────────────────────

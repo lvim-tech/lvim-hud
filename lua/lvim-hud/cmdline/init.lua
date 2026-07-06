@@ -173,7 +173,11 @@ local function render()
             -- msgarea, which has a real selection; computing it here too would fight that, flicking the
             -- counter between e.g. `1/2` and `2`.)
             if typed ~= "" then
-                local ok, sc = pcall(vim.fn.searchcount, { pattern = typed, recompute = 1, maxcount = 0 })
+                -- Bounded: `maxcount = 0` counts EVERY match of the in-progress pattern per keystroke (a whole
+                -- multi-MB buffer scan on a cheap intermediate pattern). Cap it (999 ⇒ sc.total saturates) and
+                -- time-box it (100 ms) so a live `/`/`?` counter never stalls typing.
+                local ok, sc =
+                    pcall(vim.fn.searchcount, { pattern = typed, recompute = 1, maxcount = 999, timeout = 100 })
                 cur = (ok and sc and sc.current) or 0
                 total = (ok and sc and sc.total) or 0
             else
@@ -404,11 +408,6 @@ function M.setup(cfg)
         hl.bind(build)
     end
 
-    -- Cmdline-mode keys that insert a literal newline for multi-line command input.
-    for _, key in ipairs(cfg.newline_keys or {}) do
-        vim.keymap.set("c", key, "<C-v><C-j>", { desc = "lvim-hud cmdline: newline" })
-    end
-
     -- Authoritative content refresh: cmdline_show does not always carry the result of
     -- `<C-r>` register insertion, so re-read the real command line on every change.
     local cmdline_group = api.nvim_create_augroup("LvimUiCmdline", { clear = true })
@@ -435,67 +434,78 @@ function M.setup(cfg)
         end,
     })
 
-    M._ready = true
+    -- One-time side effects, once-latched behind M._ready: a repeated setup() must NOT stack a second
+    -- vim.ui_attach handler (each with a fresh namespace ⇒ the cmdline double-renders), re-map the newline
+    -- keys, or re-register the "cmdline" sink. Mirrors notify's _ui_attached latch. (The autocmds above use a
+    -- clear=true augroup, so they stay idempotent outside this latch.)
+    if not M._ready then
+        M._ready = true
 
-    -- Expose a notify "cmdline" printer: host maps message kinds to it via
-    -- notify.ext_kinds (e.g. lua_print = "cmdline") to show them in the cmdline float.
-    if not cfg.message or cfg.message.enable ~= false then
-        local nm_ok, nm = pcall(require, "lvim-hud.notify")
-        if nm_ok and nm.register_sink then
-            nm.register_sink("cmdline", function(text)
-                M.message(text)
-            end)
+        -- Cmdline-mode keys that insert a literal newline for multi-line command input.
+        for _, key in ipairs(cfg.newline_keys or {}) do
+            vim.keymap.set("c", key, "<C-v><C-j>", { desc = "lvim-hud cmdline: newline" })
         end
-    end
 
-    local ui_ns = api.nvim_create_namespace("lvim_utils_cmdline_ui")
-    vim.ui_attach(ui_ns, { ext_cmdline = true }, function(event, ...)
-        local a = { ... }
-        if event == "cmdline_show" then
-            if not _active then
-                -- Opening OVER whatever owns the statusline (e.g. an active finder hosted in the zone below):
-                -- snapshot it so close() restores its title/counter instead of clearing the line.
-                _saved_status = (_cfg and status.is_enabled() and _cfg.statusline ~= false) and status.save() or nil
+        -- Expose a notify "cmdline" printer: host maps message kinds to it via
+        -- notify.ext_kinds (e.g. lua_print = "cmdline") to show them in the cmdline float.
+        if not cfg.message or cfg.message.enable ~= false then
+            local nm_ok, nm = pcall(require, "lvim-hud.notify")
+            if nm_ok and nm.register_sink then
+                nm.register_sink("cmdline", function(text)
+                    M.message(text)
+                end)
             end
-            _active = true
-            state.content = a[1] or {}
-            state.pos = a[2] or 0
-            state.firstc = a[3] or ":"
-            state.prompt = a[4] or ""
-            state.level = a[6] or 1
-            state.special = nil
-            _cursor_on = true
-            schedule(function()
-                render()
-                start_blink()
-            end)
-        elseif event == "cmdline_pos" then
-            state.pos = a[1] or 0
-            state.special = nil
-            _cursor_on = true
-            schedule(render)
-        elseif event == "cmdline_special_char" then
-            state.special = a[1]
-            schedule(render)
-        elseif event == "cmdline_hide" then
-            schedule(close)
-        elseif event == "cmdline_block_show" then
-            state.block = a[1] or {}
-            schedule(render)
-        elseif event == "cmdline_block_append" then
-            state.block[#state.block + 1] = a[1]
-            schedule(render)
-        elseif event == "cmdline_block_hide" then
-            state.block = {}
-            schedule(render)
         end
-    end)
 
-    -- We draw our OWN cursor in the cmdline float, so hide the redundant hardware cursor in the buffer
-    -- while the command-line is active (like the native cmdline). Driven by lvim-utils.cursor.
-    pcall(function()
-        require("lvim-utils.cursor").set_cmdline_hide(true)
-    end)
+        local ui_ns = api.nvim_create_namespace("lvim_utils_cmdline_ui")
+        vim.ui_attach(ui_ns, { ext_cmdline = true }, function(event, ...)
+            local a = { ... }
+            if event == "cmdline_show" then
+                if not _active then
+                    -- Opening OVER whatever owns the statusline (e.g. an active finder hosted in the zone
+                    -- below): snapshot it so close() restores its title/counter instead of clearing the line.
+                    _saved_status = (_cfg and status.is_enabled() and _cfg.statusline ~= false) and status.save() or nil
+                end
+                _active = true
+                state.content = a[1] or {}
+                state.pos = a[2] or 0
+                state.firstc = a[3] or ":"
+                state.prompt = a[4] or ""
+                state.level = a[6] or 1
+                state.special = nil
+                _cursor_on = true
+                schedule(function()
+                    render()
+                    start_blink()
+                end)
+            elseif event == "cmdline_pos" then
+                state.pos = a[1] or 0
+                state.special = nil
+                _cursor_on = true
+                schedule(render)
+            elseif event == "cmdline_special_char" then
+                state.special = a[1]
+                schedule(render)
+            elseif event == "cmdline_hide" then
+                schedule(close)
+            elseif event == "cmdline_block_show" then
+                state.block = a[1] or {}
+                schedule(render)
+            elseif event == "cmdline_block_append" then
+                state.block[#state.block + 1] = a[1]
+                schedule(render)
+            elseif event == "cmdline_block_hide" then
+                state.block = {}
+                schedule(render)
+            end
+        end)
+
+        -- We draw our OWN cursor in the cmdline float, so hide the redundant hardware cursor in the buffer
+        -- while the command-line is active (like the native cmdline). Driven by lvim-utils.cursor.
+        pcall(function()
+            require("lvim-utils.cursor").set_cmdline_hide(true)
+        end)
+    end
 end
 
 --- vim.ui.input-style prompt rendered in the command-line (via native input(), which
@@ -616,9 +626,13 @@ function M.message(msg)
     if timeout > 0 then
         _msg_timer = vim.uv.new_timer()
         if _msg_timer then
+            -- REPEATING (not one-shot): if a real cmdline is active when the deadline fires, the shared float
+            -- is owned by it — closing now would break the live cmdline (and the expired message, plus its
+            -- dismiss on_key handler, would otherwise stay stuck). We skip and re-check next tick; once the
+            -- cmdline is gone a tick closes us. close() stops this timer, so a normal dismiss ends it at once.
             _msg_timer:start(
                 timeout,
-                0,
+                timeout,
                 vim.schedule_wrap(function()
                     if not _active then
                         close()
@@ -762,6 +776,14 @@ function M.pager(opts)
         for _, w in ipairs({ _pager_win, _pager_hwin }) do
             if w and api.nvim_win_is_valid(w) then
                 pcall(api.nvim_win_close, w, true)
+            end
+        end
+        -- Delete the two scratch buffers too: closing only the WINDOWS leaves them hidden (bufhidden=hide is
+        -- the scratch default) with their <Nop> maps, the CursorMoved autocmd and the on_lines attach — two
+        -- leaked buffers per pager run. Deleting them drops the maps + buffer autocmds and detaches on_lines.
+        for _, b in ipairs({ buf, hbuf }) do
+            if b and api.nvim_buf_is_valid(b) then
+                pcall(api.nvim_buf_delete, b, { force = true })
             end
         end
         _pager_win, _pager_hwin = nil, nil
