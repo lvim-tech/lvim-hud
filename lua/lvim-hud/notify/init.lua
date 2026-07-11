@@ -185,7 +185,7 @@ end
 ---@return integer
 local function _bottom_offset()
     local statusline = (vim.o.laststatus >= 2) and 1 or 0
-    return vim.o.cmdheight + statusline + (_cfg.bottom_margin or 1)
+    return vim.o.cmdheight + statusline + _cfg.bottom_margin
 end
 
 --- Reposition all open panels so they stack from the bottom offset upward.
@@ -202,7 +202,7 @@ local function _restack()
                 row = win_row,
                 col = api.nvim_win_get_config(ch.win).col,
             })
-            offset = offset + (ch.height or 1) + (_cfg.panel_gap or 1)
+            offset = offset + (ch.height or 1) + _cfg.panel_gap
         end
     end
 
@@ -215,7 +215,7 @@ local function _restack()
                 row = win_row,
                 col = api.nvim_win_get_config(p.win).col,
             })
-            offset = offset + p.height + (_cfg.panel_gap or 1)
+            offset = offset + p.height + _cfg.panel_gap
         end
     end
 end
@@ -235,7 +235,7 @@ local function _rebuild_panel(level, win_w)
     local cfg_names = _cfg.level_names or {}
     local meta = _panel_meta[level] or {}
     local icon_key = meta.icon_key or tostring(level)
-    local pad_s = string.rep(" ", _cfg.padding or 1)
+    local pad_s = string.rep(" ", _cfg.padding)
     local count = #p.entries
     local name = meta.name or cfg_names[icon_key] or icon_key
     local icon = meta.icon or cfg_icons[icon_key] or " "
@@ -357,7 +357,7 @@ end
 
 --- Global max natural_w across every notify entry and every progress channel.
 local function _global_max_w()
-    local w = _cfg.min_width or 36
+    local w = _cfg.min_width
     for _, p in pairs(_panels) do
         for _, e in ipairs(p.entries) do
             w = math.max(w, e.natural_w or 0)
@@ -400,7 +400,7 @@ local function _render_prog_channel(id, win_w)
         return
     end
 
-    local pad_s = string.rep(" ", _cfg.padding or 1)
+    local pad_s = string.rep(" ", _cfg.padding)
     local hdr_icon = ch.icon or (_cfg.icons or {}).progress or ""
     local hdr_name = ch.name or tostring(id)
     local hdr_hl = ch.header_hl or "LvimNotifyHeaderInfo"
@@ -444,7 +444,7 @@ local function _render_prog_channel(id, win_w)
             border = _cfg.border or "none",
             style = "minimal",
             focusable = false,
-            zindex = math.max(1, (_cfg.zindex or 200) - 10),
+            zindex = math.max(1, _cfg.zindex - 10),
         })
         api.nvim_set_option_value("winhl", "Normal:LvimNotifyNormal", { win = win })
         ch.win = win
@@ -566,10 +566,10 @@ local function _show_toast(msg, level, opts)
     local meta = _panel_meta[level] or {}
     local title_hl = meta.title_hl or "LvimNotifyTitleInfo"
     local title = opts.title and tostring(opts.title) or nil
-    local pad = _cfg.padding or 1
+    local pad = _cfg.padding
     local pad_s = string.rep(" ", pad)
-    local max_w = _cfg.max_width or 60
-    local min_w = _cfg.min_width or 36
+    local max_w = _cfg.max_width
+    local min_w = _cfg.min_width
     local available = max_w - pad * 2
     local msg_lines = wrap(msg, available)
     -- `timeout = false` is the sticky convention (a toast that never auto-dismisses); it maps to 0 (0 already
@@ -580,7 +580,7 @@ local function _show_toast(msg, level, opts)
     elseif opts.timeout ~= nil then
         timeout = opts.timeout
     else
-        timeout = _cfg.timeout or 4000
+        timeout = _cfg.timeout
     end
 
     -- (Re)render an entry's buffer lines + marks + natural width. A `×N` badge is shown
@@ -645,7 +645,7 @@ local function _show_toast(msg, level, opts)
             border = _cfg.border or "none",
             style = "minimal",
             focusable = false,
-            zindex = _cfg.zindex or 200,
+            zindex = _cfg.zindex,
         })
         api.nvim_set_option_value("winhl", "Normal:LvimNotifyNormal", { win = win })
         _panels[level] = { win = win, buf = buf, width = entry.natural_w, height = 1, entries = {} }
@@ -869,13 +869,13 @@ function M.progress_update(id, lines, marks)
     local ch = _prog_channels[id]
     ch.lines = lines
     ch.marks = marks or {}
-    local min_w = _cfg.min_width or 36
-    local max_w = _cfg.max_width or 60
+    local min_w = _cfg.min_width
+    local max_w = _cfg.max_width
     local nw = min_w
     for _, l in ipairs(lines) do
         nw = math.max(nw, dw(l))
     end
-    ch.natural_w = math.min(max_w, nw + (_cfg.padding or 1) * 2)
+    ch.natural_w = math.min(max_w, nw + _cfg.padding * 2)
     -- Fast path: when the GLOBAL panel width is unchanged (the common case on a $/progress burst — many ticks
     -- per second), only THIS channel's content changed, so re-render just it + restack the stack geometry
     -- instead of rewriting every open toast panel's buffer. A width change (a new widest line, or the first
@@ -1460,7 +1460,7 @@ local function _attach_ui()
 
                     local lvl = _KIND_LEVEL[kind] or levels.INFO
                     local timeout = (lvl == levels.INFO or lvl == levels.DEBUG) and (_cfg.ext_echo_timeout or 3000)
-                        or (_cfg.timeout or 5000)
+                        or _cfg.timeout
 
                     _append_history(text, lvl, {})
 

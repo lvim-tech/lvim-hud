@@ -285,7 +285,10 @@ local function render()
     -- mode's colour (blue for `:` command — matching the typed text — green for search, …) instead of a block.
     if _cursor_on then
         local crow = cmd_row + cur_sub - 1
-        local ccol = badge_w + 1 + cur_col
+        -- The caret's byte column = the gutter (`pad`, which the buffer lines were built with) + the cursor's
+        -- offset into the sub-line. Use `#pad` directly rather than re-deriving `badge_w + 1`, so the caret can
+        -- never drift from the pad the lines actually carry (the two must stay identical).
+        local ccol = #pad + cur_col
         local cline = lines[crow + 1] or ""
         api.nvim_buf_set_extmark(buf, _ns, crow, math.min(ccol, #cline), {
             -- The caret GLYPH (config.cmdline.caret, default `▎` ≈ the finders' beam-cursor width); its colour
