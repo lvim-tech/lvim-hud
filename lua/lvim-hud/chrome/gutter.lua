@@ -97,18 +97,47 @@ local function mark_list(buf)
     return list
 end
 
---- The mark letter sitting on `buf` line `lnum`, or "".
+--- The mark letter sitting on `buf` line `lnum`, or "". A line can hold several marks; when this is the
+--- CURSOR line of `win`, the one reported is column-aware — the first mark AT or AFTER the cursor column
+--- (so a mark directly UNDER the cursor is the one shown, and stepping right along the line advances to the
+--- next mark ahead), falling back to the nearest mark to the LEFT once the cursor is past them all. On any
+--- other line (or with no window) the first mark in list order is used, exactly as before.
 ---@param buf integer
 ---@param lnum integer
+---@param win integer?  the window being drawn — enables the cursor-column pick on its cursor line
 ---@return string
-function M.mark_letter(buf, lnum)
+function M.mark_letter(buf, lnum, win)
+    -- Only the cursor line needs the column-aware pick; compute its 1-based cursor column (getmarklist cols
+    -- are 1-based, the window cursor col is 0-based) once, and leave it nil for every other line.
+    local ccol
+    if win and win ~= 0 and api.nvim_win_is_valid(win) then
+        local cur = api.nvim_win_get_cursor(win)
+        if cur[1] == lnum then
+            ccol = cur[2] + 1
+        end
+    end
+    local here = {}
     for _, m in ipairs(mark_list(buf)) do
         local letter = m.mark:match("^[`']?([a-zA-Z])$")
         if letter and m.pos[1] == buf and m.pos[2] == lnum then
-            return letter
+            if not ccol then
+                return letter -- not the cursor line: keep the first-in-list mark (zero extra work)
+            end
+            here[#here + 1] = { letter = letter, col = m.pos[3] or 1 }
         end
     end
-    return ""
+    if #here == 0 then
+        return ""
+    end
+    table.sort(here, function(a, b)
+        return a.col < b.col
+    end)
+    for _, e in ipairs(here) do
+        if e.col >= ccol then
+            return e.letter
+        end
+    end
+    return here[#here].letter
 end
 
 -- ── click resolution (for a segment's `click.run`) ───────────────────────────────────────────────────────
