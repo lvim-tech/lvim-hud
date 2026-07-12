@@ -471,8 +471,12 @@ local function _render_prog_channel(id, win_w)
     end
 
     for _, m in ipairs(col_marks) do
-        api.nvim_buf_set_extmark(buf, NS, m[1], m[2], {
-            end_col = m[3],
+        -- clamp col + end_col to the line's byte length: a mark's byte column can run past a
+        -- shorter-than-expected / pre-padding / multibyte line, which errors ("end_col out of
+        -- range") — the same guard the per-level panel render uses (see `set_mark`).
+        local len = #(all_lines[m[1] + 1] or "")
+        api.nvim_buf_set_extmark(buf, NS, m[1], math.min(m[2], len), {
+            end_col = math.min(m[3], len),
             hl_group = m[4],
             hl_eol = m[5] or false,
             priority = 150,
