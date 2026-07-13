@@ -370,7 +370,48 @@ M.notify = {
     history = {
         target = "cmdline", -- fallback pager when the zone is off: "cmdline" | "split"
         title = "Messages", -- the panel label
+        -- TRANSIENT display: how many SECONDS a message stays on screen in the zone while you are NOT in it.
+        -- Each message runs its OWN clock — a newer one lands on top with a fresh countdown and does not
+        -- extend the older ones — and the zone closes once the last live message expires. Descending INTO the
+        -- zone lists the WHOLE history (nothing is dropped, only hidden) and PAUSES every countdown while you
+        -- read; leaving resumes them where they stopped.
+        -- 0 = the old behaviour: every message opens the zone with the whole history, and it stays.
+        hide_after = 10,
+        -- The LIFE glyph in front of each message while `hide_after` is on: a Nerd Font circle that DRAINS as
+        -- the message's own countdown runs out (full when it arrives, empty just before it goes), so you can
+        -- see at a glance how long each one still has. The frame is picked by the REMAINING fraction — this is
+        -- not a spinner. Frames go FULL → EMPTY. Set to false (or {}) to show no glyph.
+        life_icons = {
+            "\u{f0aa5}",
+            "\u{f0aa4}",
+            "\u{f0aa3}",
+            "\u{f0aa2}",
+            "\u{f0aa1}",
+            "\u{f0aa0}",
+            "\u{f0a9f}",
+            "\u{f0a9e}",
+        },
         statusline = true, -- true: publish the title + count to the statusline; false: show the title at the LEFT of the bar
+        -- Background-tint strength of the message ROWS themselves — a blend of the LEVEL's colour toward the
+        -- background (0 = plain bg, 1 = the pure level colour). The rhythm is body < accent cell < active:
+        -- the row only HINTS at its level, the icon cell reads as a badge, and the focused row is the one
+        -- thing that must be unmistakable (the hardware cursor is hidden in the panel).
+        tints = {
+            row = 0.05, -- the whole row (and its text): the level tint you read the panel by
+            icon = 0.1, -- the level icon's cell (bold) — a denser badge beside the row
+            active = 0.2, -- the row under the cursor while you are IN the zone (bold)
+        },
+        -- The ACCENT each level (and each bar action) is tinted with. A lvim-utils PALETTE KEY (so it tracks
+        -- the live theme — "red", "blue", …) or a literal "#rrggbb". Every group above is derived from these,
+        -- so recolouring a level here recolours its row, its icon cell, its focused row AND its filter button.
+        colors = {
+            error = "red",
+            warn = "orange",
+            info = "blue",
+            debug = "purple",
+            refresh = "green", -- the bar's Refresh button
+            close = "yellow", -- the bar's Close button
+        },
         -- The focused filter bar (rendered through ui.bar — navigable buttons + overflow chevrons).
         bar = {
             key_pad = { 1, 1 }, -- the hotkey BADGE padding { front, back }

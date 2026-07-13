@@ -12,6 +12,7 @@
 local M = {}
 
 local api = vim.api
+local uv = vim.uv or vim.loop
 local colors = require("lvim-utils.colors")
 local config = require("lvim-hud.config")
 local hl = require("lvim-utils.highlight")
@@ -686,13 +687,69 @@ end
 
 -- ── history printer ────────────────────────────────────────────────────────
 
+--- Seconds a message stays PASSIVELY visible in the zone (`history.hide_after`); 0 = forever (old behaviour).
+---@return integer
+local function _hide_after()
+    return tonumber((_cfg.history or {}).hide_after) or 0
+end
+
+---@type integer?  uv.now() at which the countdowns were PAUSED (the zone has focus); nil while they run
+local _hist_paused_at = nil
+---@type integer  message lines the zone showed on the LAST render (the reflow is deferred, so the buffer
+--- cannot be measured in time — this is how "how many rows appeared above the reader" is known)
+local _hist_rendered = 0
+---@type boolean  the reader closed the panel with `q`: stay hidden until a NEW message (or a re-open)
+local _hist_dismissed = false
+---@type uv.uv_timer_t?  fires at the next message's expiry (re-armed after each render)
+local _hist_timer = nil
+
+--- The LIFE glyph for a message: a circle that DRAINS as its countdown runs out (full on arrival, empty just
+--- before it goes). Picked by the REMAINING FRACTION — unlike the LSP progress spinner, which cycles its
+--- frames on a timer regardless of the work done, this one MEANS something: it is the message's time left.
+--- Empty string when transient mode is off, when the glyphs are disabled, or when the message has no clock.
+---@param item table
+---@return string
+local function _hist_life(item)
+    local icons = (_cfg.history or {}).life_icons
+    if _hide_after() <= 0 or type(icons) ~= "table" or #icons == 0 or not item.expires then
+        return ""
+    end
+    -- PAUSED (the reader is in the zone): the clocks are frozen, so the glyph freezes with them — it shows the
+    -- time each message will still have when they leave, not a countdown that kept running while they read.
+    local now = _hist_paused_at or uv.now()
+    local left = (item.expires - now) / (_hide_after() * 1000)
+    if left <= 0 then
+        return "" -- out of time: the glyph is GONE (such a message is only ever seen in the browse view)
+    end
+    if left > 1 then
+        left = 1
+    end
+    -- fraction 1 → frame 1 (full) … fraction →0 → the last frame (empty)
+    local idx = #icons - math.floor(left * #icons + 0.5) + 1
+    return icons[math.max(1, math.min(#icons, idx))]
+end
+
+--- Has this message run out of its passive time? Never while the countdowns are paused (you are reading the
+--- zone) and never when `hide_after = 0`.
+---@param item table
+---@return boolean
+local function _hist_expired(item)
+    if _hide_after() <= 0 or _hist_paused_at ~= nil or not item.expires then
+        return false
+    end
+    return uv.now() >= item.expires
+end
+
 local function _append_history(msg, level, opts)
     table.insert(_history, {
         msg = tostring(msg or ""),
         level = level or levels.INFO,
         opts = opts or {},
         time = os.time(),
+        -- Its OWN clock, started when it ARRIVES: a new message never extends an older one's time.
+        expires = _hide_after() > 0 and (uv.now() + _hide_after() * 1000) or nil,
     })
+    _hist_dismissed = false -- a new message always shows, even if the panel was closed with `q`
     local max = _cfg.max_history or 100
     while #_history > max do
         table.remove(_history, 1)
@@ -1047,23 +1104,37 @@ local _hist_cap = { info = "Info", warn = "Warn", error = "Error", debug = "Debu
 --- The history as zone lines (newest first) + parallel whole-row level tints (which take the focused zone's
 --- active-row "Sel" boost). `filter` keeps one level, or nil for all.
 ---@param filter string?
+---@param live_only boolean?  passive view: drop the messages whose time has run out (they stay in _history)
+---@param width integer?  the zone panel's width — the LIFE glyph is right-aligned inside it
 ---@return string[] lines, string[] hls
-local function _history_zone_lines(filter)
+local function _history_zone_lines(filter, live_only, width)
     local lines, hls = {}, {}
+    width = width or 0
     for i = #_history, 1, -1 do
         local item = _history[i]
         local key = LEVEL_KEY[item.level] or "info"
-        if not filter or filter == key then
+        if (not filter or filter == key) and not (live_only and _hist_expired(item)) then
             local icon = (_cfg.icons or {})[key]
             local ts = os.date("%H:%M:%S", item.time) --[[@as string]]
             local title = item.opts and item.opts.title
             local pre = title and ("[" .. title .. "] ") or ""
             local body = (icon and icon ~= "" and (icon .. "  ") or "") .. ts .. "  " .. pre .. item.msg:gsub("\n", " ")
-            lines[#lines + 1] = "  " .. body
+            local row = "  " .. body
+            -- The LIFE circle rides the RIGHT edge of its row, two columns in — the message reads left to
+            -- right and the time it has left is a margin note, not a prefix. Skipped when the text already
+            -- fills the row (there is nowhere to put it that would not overwrite the message).
+            local life = _hist_life(item)
+            if life ~= "" and width > 0 then
+                local pad = width - vim.fn.strdisplaywidth(row) - vim.fn.strdisplaywidth(life) - 2
+                if pad > 0 then
+                    row = row .. string.rep(" ", pad) .. life .. "  "
+                end
+            end
+            lines[#lines + 1] = row
             hls[#hls + 1] = "LvimUiMsg" .. (_hist_cap[key] or "Info")
         end
     end
-    if #lines == 0 then
+    if #lines == 0 and not live_only then
         -- the empty-filter placeholder carries THAT level's own bg tint (a red row for "No Error records", …),
         -- so the empty state reads as belonging to the filtered colour; All (no filter) stays Info-blue.
         lines, hls =
@@ -1163,6 +1234,9 @@ local function _history_zone_render(focus)
     if not (ma and ma.is_enabled and ma.is_enabled()) then
         return false
     end
+    if focus then
+        _hist_dismissed = false -- an explicit open (`:Messages`) always shows the history again
+    end
     local hcfg = _cfg.history or {}
     local bcfg = hcfg.bar or {}
     local opts = { key_pad = bcfg.key_pad or { 1, 1 }, label_pad = bcfg.label_pad or { 1, 1 }, gap = bcfg.gap or 0 }
@@ -1173,14 +1247,14 @@ local function _history_zone_render(focus)
     opts.title = (not use_status) and title_text or nil
     local seg = ma.segment("history", { priority = 10 })
 
-    -- A PASSIVE live render (a new message) while the user is BROWSING (focused) must NOT disrupt their view —
-    -- the message is in _history and shows on a refresh (`r`) / re-focus.
-    if not focus and ma.is_focused and ma.is_focused("history") then
-        return true
-    end
+    -- A message arriving while the user is BROWSING the zone (focused) appears IMMEDIATELY, at the top — it is
+    -- a message about what they just did ("3 lines yanked"), and waiting for the next cursor move to reveal it
+    -- reads as a broken panel. What must NOT change is their PLACE: the new rows land above them and push every
+    -- existing row down, so the cursor is moved by exactly that many lines and stays on the same message.
+    local browsing = (not focus) and ma.is_focused ~= nil and ma.is_focused("history")
     -- The passive live display always shows ALL: a new message must appear regardless of a stale browse filter
-    -- (e.g. one left on "Error" after a previous `:Messages` was closed). The focused browse keeps its filter.
-    if not focus then
+    -- (e.g. one left on "Error" after a previous `:Messages` was closed). A focused BROWSE keeps its filter.
+    if not focus and not browsing then
         _hist_filter = nil
     end
 
@@ -1202,14 +1276,90 @@ local function _history_zone_render(focus)
             status.set({ title = title_text, total = fcount(), current = 0 })
         end
     end
-    local function render()
+    --- Re-arm the expiry timer to the EARLIEST live message's deadline. One timer for the whole history — it
+    --- fires when something actually expires, it does not poll. Disarmed while paused (focused) or off.
+    local function arm()
+        if _hist_timer then
+            _hist_timer:stop()
+            _hist_timer:close()
+            _hist_timer = nil
+        end
+        if _hide_after() <= 0 or _hist_paused_at ~= nil then
+            return
+        end
+        local now, soonest = uv.now(), nil
+        for _, it in ipairs(_history) do
+            if it.expires and it.expires > now and (soonest == nil or it.expires < soonest) then
+                soonest = it.expires
+            end
+        end
+        if not soonest then
+            return
+        end
+        _hist_timer = uv.new_timer()
+        if not _hist_timer then
+            return
+        end
+        -- With the LIFE glyph on, the zone must repaint as the circles DRAIN — one tick per frame, so nothing
+        -- is redrawn more often than it visibly changes (a 10s life over 8 frames = a repaint every 1.25s).
+        -- Without the glyph there is nothing to animate: a single shot at the next expiry is enough.
+        local icons = (_cfg.history or {}).life_icons
+        local frames = (type(icons) == "table" and #icons) or 0
+        local interval = frames > 0 and math.max(200, math.floor((_hide_after() * 1000) / frames))
+            or math.max(16, soonest - now)
+        local repeat_ms = frames > 0 and interval or 0
+        _hist_timer:start(interval, repeat_ms, function()
+            vim.schedule(function()
+                _history_zone_render(false) -- repaint: the circles drain, the expired ones drop out (zone hides)
+            end)
+        end)
+    end
+
+    --- @param browse boolean?  are we rendering the FOCUSED (browse) view? Passed explicitly — it must never be
+    --- read from the enclosing `focus` argument: this closure outlives the call that built it (it is the
+    --- segment's on_focus/on_blur/keys handler), so that value goes stale and a blur would still render as if
+    --- the reader were inside (which is why `q` looked like it only hid the title bar).
+    local function render(browse)
+        if browse == nil then
+            browse = (ma.is_focused ~= nil and ma.is_focused("history")) == true
+        end
         -- light the focused button (hover) ONLY while the BAR sub-sector is focused; keep `sel` always so the
         -- bar scrolls to keep that button visible.
         local hov = (ma.bar_focused and ma.bar_focused()) and _hist_sel or nil
         opts.width = (ma.zone_width and ma.zone_width()) or vim.o.columns -- the REAL panel width (not o.columns)
         local bar, bar_hls = _history_bar(_hist_filter, opts, _hist_sel, hov)
         seg:configure({ title = bar, title_hls = bar_hls })
-        seg:set(_history_zone_lines(_hist_filter))
+        -- PASSIVE: only the messages whose time has not run out — that is the whole point of `hide_after`.
+        -- BROWSE: everything, because you asked to see it (and nothing expires while you read).
+        local live_only = _hide_after() > 0 and not browse
+        local lines, hls = _history_zone_lines(_hist_filter, live_only, opts.width)
+        if (live_only and #lines == 0) or (_hist_dismissed and not browse) then
+            -- nothing live left (every message timed out), or the reader closed the panel with `q`: the zone
+            -- has nothing to show and closes. `q` stays dismissed until a NEW message arrives or it is opened
+            -- again — otherwise the blur repaint below would just put the messages straight back on screen.
+            seg:clear()
+            _hist_rendered = 0
+            arm()
+            return
+        end
+        -- Keep the reader's PLACE. New messages are prepended, so every row they are reading moves DOWN by
+        -- however many rows appeared. The panel's reflow is DEFERRED (the zone re-composes on the next tick),
+        -- so the shift is measured from OUR line counts — not the buffer's, which has not changed yet — and
+        -- applied after the reflow lands.
+        local win = browse and ma.zone_win and ma.zone_win() or nil
+        local row = (win and api.nvim_win_is_valid(win)) and api.nvim_win_get_cursor(win)[1] or nil
+        local delta = #lines - (_hist_rendered or #lines)
+        _hist_rendered = #lines
+        seg:set(lines, hls)
+        if win and row and delta > 0 then
+            vim.schedule(function()
+                if api.nvim_win_is_valid(win) then
+                    local n = api.nvim_buf_line_count(api.nvim_win_get_buf(win))
+                    pcall(api.nvim_win_set_cursor, win, { math.min(row + delta, n), 0 })
+                end
+            end)
+        end
+        arm()
     end
     local function refilter(f) -- a filter key (fires only WHILE focused) → re-render + refresh the count
         _hist_filter = f
@@ -1226,6 +1376,8 @@ local function _history_zone_render(focus)
             render()
             publish() -- Refresh
         elseif b.k == "q" then
+            _hist_dismissed = true -- closed by the reader: do not let the blur repaint bring it back
+            _hist_rendered = 0
             seg:clear()
             ma.blur() -- close
         end
@@ -1234,6 +1386,15 @@ local function _history_zone_render(focus)
     seg:configure({
         title_when_focused = true, -- the filter bar shows only while browsing (focused); else clean tinted lines
         keys = {
+            -- `q` is the messages panel's OWN close (a segment key overrides msgarea's generic clear+blur):
+            -- it must DISMISS the panel, i.e. mark it closed so the blur repaint below does not immediately
+            -- put the messages back on screen — which is what made `q` look like it only hid the title bar.
+            q = function()
+                _hist_dismissed = true
+                _hist_rendered = 0
+                seg:clear()
+                ma.blur()
+            end,
             a = function()
                 refilter(nil)
             end,
@@ -1283,19 +1444,39 @@ local function _history_zone_render(focus)
         -- The statusline is FOCUS-driven (so it is right even on re-descend): entering snapshots whoever owns
         -- the line now (the finder) + shows "Messages"; leaving puts it back (or clears if there was none).
         on_focus = function()
+            -- Reading the zone PAUSES every countdown: nothing may vanish under you while you are in it. The
+            -- focused view also lists the WHOLE history (see render) — the transient display hides messages,
+            -- it never drops them.
+            if _hide_after() > 0 and _hist_paused_at == nil then
+                _hist_paused_at = uv.now()
+            end
+            render(true)
             if use_status then
                 _hist_saved = status.save()
                 publish()
             end
         end,
         on_blur = function()
+            -- Leaving RESUMES the countdowns where they stopped — a message with 4s left when you descended
+            -- still has 4s left when you come back up, instead of having quietly run out while you read.
+            if _hist_paused_at ~= nil then
+                local delta = uv.now() - _hist_paused_at
+                _hist_paused_at = nil
+                for _, it in ipairs(_history) do
+                    if it.expires then
+                        it.expires = it.expires + delta
+                    end
+                end
+            end
+            _hist_filter = nil -- the passive view always shows every level (a browse filter must not linger)
+            render(false) -- back to the passive view: only the messages that still have time left
             if use_status then
                 status.restore(_hist_saved) -- nil snapshot ⇒ clears (no prior owner)
                 _hist_saved = nil
             end
         end,
     })
-    render()
+    render(focus == true or browsing)
     if focus then
         seg:focus() -- fires on_focus → snapshot + publish + show the bar (title_when_focused)
     end
@@ -1489,31 +1670,55 @@ local _initialized = false
 
 --- Per-level highlight groups for the history pager rows. Single source of truth
 --- (the cmdline module merges these too). Owned here so the history has its colours
---- even when the cmdline module is disabled.
----   LvimUiMsg<L>       row background       — light tint (0.1)
----   LvimUiMsg<L>Text   message label        — level fg on light tint
----   LvimUiMsg<L>Icon   left icon badge      — level fg on a stronger background tint (0.3)
----   LvimUiMsg<L>Active focused row          — same 0.3 background, so it merges with the icon
+--- even when the cmdline module is disabled. Every strength comes from config (`history.tints` for the
+--- rows, `history.bar.tints` for the filter buttons) — the values below are only the fallbacks:
+---   LvimUiMsg<L>       row background + text — the level tint the panel is read by   (tints.row)
+---   LvimUiMsg<L>Icon   the level icon's cell — a denser badge, bold                  (tints.icon)
+---   LvimUiMsg<L>Active a focused row's bg    — kept at the icon's strength so the two merge
+---   LvimUiMsg<L>Sel    the row under the cursor while the zone is FOCUSED, bold      (tints.active)
 ---@return table<string, table>
 function M.msg_highlights()
     local c = colors
     local b, bg = c.blend, c.bg
     local g = {}
-    -- the level tints + two extra hues for the history bar's action buttons (Refresh green, Close yellow)
-    local msg = { Error = c.red, Warn = c.orange, Info = c.blue, Debug = c.purple, Refresh = c.green, Close = c.yellow }
+    -- The per-level accents (+ the two bar-action hues) — config-driven: a PALETTE KEY (tracks the live
+    -- theme) or a literal "#rrggbb". Everything below is DERIVED from these, so one entry recolours a level's
+    -- row, its icon cell, its focused row and its filter button together.
+    local cc = (_cfg.history or {}).colors or {}
+    ---@param key string  the config key (error/warn/…)
+    ---@param fallback string  the palette key used when it is unset
+    ---@return string
+    local function accent(key, fallback)
+        local v = cc[key] or fallback
+        if type(v) == "string" and v:sub(1, 1) == "#" then
+            return v
+        end
+        return c[v] or c[fallback] or c.blue
+    end
+    local msg = {
+        Error = accent("error", "red"),
+        Warn = accent("warn", "orange"),
+        Info = accent("info", "blue"),
+        Debug = accent("debug", "purple"),
+        Refresh = accent("refresh", "green"),
+        Close = accent("close", "yellow"),
+    }
     -- the filter bar's per-part tint strengths come from config (history.bar.tints) — fully customisable.
     local bt = ((_cfg.history or {}).bar or {}).tints or {}
     local badge_t, name_t = bt.badge or {}, bt.name or {}
     local bn, ba = badge_t.normal or 0.2, badge_t.active or 0.4
     local nn, na = name_t.normal or 0.1, name_t.active or 0.3
+    -- The message ROWS' own strengths (config-driven, like the bar's).
+    local rt = (_cfg.history or {}).tints or {}
+    local t_row, t_icon, t_active = rt.row or 0.05, rt.icon or 0.1, rt.active or 0.2
     for name, col in pairs(msg) do
-        g["LvimUiMsg" .. name] = { fg = col, bg = b(col, bg, 0.1) }
-        g["LvimUiMsg" .. name .. "Text"] = { fg = col, bg = b(col, bg, 0.1) }
-        g["LvimUiMsg" .. name .. "Icon"] = { fg = col, bg = b(col, bg, 0.2), bold = true }
-        g["LvimUiMsg" .. name .. "Active"] = { bg = b(col, bg, 0.2) }
-        -- The ACTIVE (cursor) message row when the zone is focused: same hue, STRONGER tint (fg + a 0.4 blend
-        -- + bold — the help-window active-row canon), so the focused row stands out while the cursor is hidden.
-        g["LvimUiMsg" .. name .. "Sel"] = { fg = col, bg = b(col, bg, 0.4), bold = true }
+        g["LvimUiMsg" .. name] = { fg = col, bg = b(col, bg, t_row) }
+        g["LvimUiMsg" .. name .. "Text"] = { fg = col, bg = b(col, bg, t_row) }
+        g["LvimUiMsg" .. name .. "Icon"] = { fg = col, bg = b(col, bg, t_icon), bold = true }
+        g["LvimUiMsg" .. name .. "Active"] = { bg = b(col, bg, t_icon) } -- merges with the icon cell
+        -- The ACTIVE (cursor) message row while the zone is FOCUSED: same hue, the strongest tint + bold (the
+        -- help-window active-row canon), so the focused row is unmistakable while the cursor is hidden.
+        g["LvimUiMsg" .. name .. "Sel"] = { fg = col, bg = b(col, bg, t_active), bold = true }
         -- The filter bar's two button parts, each in a NORMAL + ACTIVE/hover tint (config-driven).
         g["LvimUiMsg" .. name .. "BadgeN"] = { fg = col, bg = b(col, bg, bn), bold = true }
         g["LvimUiMsg" .. name .. "BadgeA"] = { fg = col, bg = b(col, bg, ba), bold = true }
