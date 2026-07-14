@@ -34,7 +34,8 @@ local state = { content = {}, pos = 0, firstc = ":", prompt = "", level = 1, blo
 --- zone and returns a table carrying at least `width` (or nil when the zone is off); `done()` releases them.
 ---@class LvimCmdlineHostProvider
 ---@field host fun(height: integer): table|nil  reserve `height` rows in the zone; nil when the zone is off
----@field done fun()  release the reserved rows and reflow the zone
+---@field done fun()  release the reserved rows and reflow the zone (window work — scheduled)
+---@field clear? fun()  drop the reserved ROWS only, no window work — safe in the ui-event fast context
 
 --- The registered host provider, or nil when no zone hosts the cmdline (it then anchors to the editor bottom).
 ---@type LvimCmdlineHostProvider?
@@ -490,6 +491,14 @@ function M.setup(cfg)
                 state.special = a[1]
                 schedule(render)
             elseif event == "cmdline_hide" then
+                -- Give the zone back our ROWS immediately (data only — no window API, so it is safe here). The
+                -- typed command runs SYNCHRONOUSLY, before the scheduled `close` below: a command that opens a
+                -- docked panel would otherwise reserve its rows on top of ours, and the zone would compose the
+                -- SUM for one frame — the panel visibly opening too tall and then shrinking. The real teardown
+                -- (closing the float, reflowing) stays scheduled: it touches windows.
+                if _host_provider and _host_provider.clear then
+                    pcall(_host_provider.clear)
+                end
                 schedule(close)
             elseif event == "cmdline_block_show" then
                 state.block = a[1] or {}
