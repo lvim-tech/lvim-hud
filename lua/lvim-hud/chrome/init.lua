@@ -159,7 +159,11 @@ function M.setup()
                 break
             end
         end
-        local target = has_real and (cfg.tabline.showtabline or 2) or 0
+        -- With MORE THAN ONE tabpage the tabline is doing its actual job (showing the tabs), so keep it — else a
+        -- fullscreen panel tab (e.g. `:LvimGit status` in its dedicated tabpage, whose only real window holds a
+        -- nofile backdrop) would collapse it and hide which tab you are on. The dashboard case (a lone tab with
+        -- no real file) still hides.
+        local target = (has_real or #api.nvim_list_tabpages() > 1) and (cfg.tabline.showtabline or 2) or 0
         if vim.o.showtabline ~= target then
             vim.o.showtabline = target
         end
