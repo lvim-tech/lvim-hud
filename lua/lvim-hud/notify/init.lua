@@ -1533,7 +1533,7 @@ function M.history()
 
     local cmd = require("lvim-hud.cmdline")
     cmd.pager({
-        title = " History ",
+        title = "History",
         keymaps = keymaps,
         order = { "a", "e", "w", "i", "d", "r" },
         level_at = function(row)
