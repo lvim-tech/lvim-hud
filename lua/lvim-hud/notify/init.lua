@@ -105,6 +105,8 @@ local _hist_sel = 1 ---@type integer  the focused filter-bar button (l/h move it
 ---@field is_focused fun(name: string): boolean  whether the named segment currently holds focus
 ---@field bar_focused fun(): boolean  whether the zone's filter bar sub-sector holds focus
 ---@field zone_width fun(): integer  the real panel width (not vim.o.columns)
+---@field zone_win? fun(): integer?  the window the zone is shown in (nil when not visible) — for cursor-keep
+---@field content_row? fun(name: string): integer?  0-based content line under the cursor (for delete-current)
 ---@field blur fun()  leave/close the zone
 
 --- The registered message-zone sink, or nil when no zone is installed.
@@ -143,21 +145,27 @@ local function wrap(text, limit)
         return { tostring(text) }
     end
     local lines = {}
-    for raw in tostring(text):gmatch("[^\n]+") do
-        local line = ""
-        for word in raw:gmatch("%S+") do
-            local candidate = line == "" and word or (line .. " " .. word)
-            if dw(candidate) > limit then
-                if line ~= "" then
-                    table.insert(lines, line)
+    -- Split on `\n` with vim.split (NOT gmatch("[^\n]+"), which collapses consecutive newlines) so a
+    -- deliberate blank line — e.g. formatted inputlist() / :confirm prompt text — is preserved as an empty row.
+    for _, raw in ipairs(vim.split(tostring(text), "\n", { plain = true })) do
+        if raw == "" then
+            table.insert(lines, "")
+        else
+            local line = ""
+            for word in raw:gmatch("%S+") do
+                local candidate = line == "" and word or (line .. " " .. word)
+                if dw(candidate) > limit then
+                    if line ~= "" then
+                        table.insert(lines, line)
+                    end
+                    line = word
+                else
+                    line = candidate
                 end
-                line = word
-            else
-                line = candidate
             end
-        end
-        if line ~= "" then
-            table.insert(lines, line)
+            if line ~= "" then
+                table.insert(lines, line)
+            end
         end
     end
     return #lines > 0 and lines or { "" }
@@ -317,6 +325,11 @@ local function _rebuild_panel(level, win_w)
     -- separator and title marks layer their fg on top. Only when a matching Body group
     -- exists (the standard levels; custom panels keep the plain panel bg).
     local body_hl, n_body = header_hl:gsub("Header", "Body")
+    -- A custom panel (registered via M.register_panel) that supplied its own `hl` uses THAT group for its
+    -- content lines — the documented behaviour. Built-in levels have no `name` and keep the Body derivation.
+    if meta.name and meta.hl then
+        body_hl, n_body = meta.hl, 1
+    end
     if n_body > 0 then
         for r = 1, h - 1 do
             api.nvim_buf_set_extmark(buf, NS, r, 0, {
@@ -377,6 +390,24 @@ local function _rebuild(level)
         _close_panel(level)
     end
     _rebuild_all()
+end
+
+--- Remove a specific toast entry from its level panel and rebuild (used to dismiss the sticky `confirm`
+--- prompt toast on the protocol's `msg_clear`). No-op when the entry is already gone.
+---@param level any
+---@param entry table
+local function _remove_toast_entry(level, entry)
+    local p = _panels[level]
+    if not p then
+        return
+    end
+    for i, e in ipairs(p.entries) do
+        if e == entry then
+            table.remove(p.entries, i)
+            _rebuild(level)
+            return
+        end
+    end
 end
 
 -- ── progress channels ─────────────────────────────────────────────────────
@@ -613,7 +644,42 @@ local function _show_toast(msg, level, opts)
         end
         entry.lines, entry.marks = lines, marks
         entry.natural_w = math.min(max_w, math.max(min_w, inner_w + pad * 2))
-        entry.deadline = vim.uv.now() + timeout
+        -- A finite deadline only for a timed toast; a sticky one (timeout 0) has NO deadline, so a later timed
+        -- repeat can give it one (and arm the chain) and a later sticky repeat can take it away — the removal
+        -- chain re-reads `deadline` each tick and stops without removing when it is nil again.
+        entry.deadline = timeout > 0 and (vim.uv.now() + timeout) or nil
+    end
+
+    -- Sliding-deadline removal, armed ONCE per entry (`entry.timer_armed` guards a second chain when a dedup
+    -- repeat re-enters). The single chain re-reads `entry.deadline` — render() slides it forward on a repeat,
+    -- or clears it (sticky) — so one chain tracks every case: expired ⇒ drop; future ⇒ re-defer; nil ⇒ stop.
+    ---@param entry table
+    local function schedule_remove(entry)
+        if entry.timer_armed then
+            return
+        end
+        entry.timer_armed = true
+        local function tick()
+            local pp = _panels[level]
+            if not pp then
+                return
+            end
+            for i, e in ipairs(pp.entries) do
+                if e == entry then
+                    if not e.deadline then
+                        e.timer_armed = false -- became sticky (a later sticky repeat): keep it, stop the chain
+                    elseif vim.uv.now() < e.deadline then
+                        vim.defer_fn(tick, math.max(50, e.deadline - vim.uv.now()))
+                    else
+                        table.remove(pp.entries, i)
+                        _rebuild(level)
+                        e.timer_armed = false
+                    end
+                    break
+                end
+            end
+        end
+        vim.defer_fn(tick, math.max(50, (entry.deadline or 0) - vim.uv.now()))
     end
 
     -- Dedup: an identical consecutive toast (same level, title, message) bumps a counter
@@ -623,9 +689,15 @@ local function _show_toast(msg, level, opts)
         local last = p.entries[#p.entries]
         if last and last.title == title and last.raw == msg then
             last.count = (last.count or 1) + 1
-            render(last)
+            render(last) -- slides (or clears) the deadline to reflect THIS call's timeout
             _rebuild(level)
-            return
+            -- Arm the removal chain if a timed repeat lands on a still-unarmed (e.g. sticky-first) entry, so it
+            -- does eventually expire. A sticky repeat (timeout 0) leaves the deadline nil; an already-armed
+            -- chain then stops without removing (see schedule_remove) — no double timer.
+            if timeout > 0 then
+                schedule_remove(last)
+            end
+            return last, level
         end
     end
 
@@ -660,29 +732,9 @@ local function _show_toast(msg, level, opts)
     _rebuild(level)
 
     if timeout > 0 then
-        -- Sliding-deadline removal: a dedup hit pushes `entry.deadline` forward, so the
-        -- toast persists while it keeps repeating and clears `timeout` ms after the last.
-        local function schedule_remove()
-            vim.defer_fn(function()
-                local pp = _panels[level]
-                if not pp then
-                    return
-                end
-                for i, e in ipairs(pp.entries) do
-                    if e == entry then
-                        if vim.uv.now() < (e.deadline or 0) then
-                            schedule_remove()
-                        else
-                            table.remove(pp.entries, i)
-                            _rebuild(level)
-                        end
-                        break
-                    end
-                end
-            end, math.max(50, (entry.deadline or 0) - vim.uv.now()))
-        end
-        schedule_remove()
+        schedule_remove(entry)
     end
+    return entry, level
 end
 
 -- ── history printer ────────────────────────────────────────────────────────
@@ -896,7 +948,9 @@ function M.register_panel(key, opts)
     _panel_meta[key] = {
         name = opts.name,
         icon = opts.icon,
-        hl = opts.hl or "LvimNotifyInfo",
+        -- `hl` is the CONTENT-line highlight group for this custom panel (applied by _rebuild_panel). Left nil
+        -- when unset so the panel falls back to the header-derived Body tint (LvimNotify<Header→Body>).
+        hl = opts.hl,
         header_hl = opts.header_hl or "LvimNotifyHeaderInfo",
     }
     -- Remove any existing position for this key, then insert at requested order.
@@ -1143,12 +1197,44 @@ local function _history_zone_lines(filter, live_only, width)
     return lines, hls
 end
 
+--- The `_history` index of the message shown at display row `idx` (0-based, top = newest) under `filter` —
+--- the inverse of `_history_zone_lines`'s newest-first, filtered, one-row-per-message layout (browse view, so
+--- no expiry filtering). Returns nil for a row that is not a real message (e.g. the "No … records" placeholder).
+---@param idx integer  0-based display row
+---@param filter string?  the active level filter (nil = All)
+---@return integer?
+local function _hist_index_at(idx, filter)
+    local seen = 0
+    for i = #_history, 1, -1 do
+        local item = _history[i]
+        if not filter or filter == (LEVEL_KEY[item.level] or "info") then
+            if seen == idx then
+                return i
+            end
+            seen = seen + 1
+        end
+    end
+    return nil
+end
+
 -- Each history-bar button's hl prefix: a / All is blue (Info), the levels their own colour, Refresh GREEN,
--- close YELLOW (the two extra hues added to msg_highlights).
-local _btn_cap = { a = "Info", e = "Error", w = "Warn", i = "Info", d = "Debug", r = "Refresh", q = "Close" }
+-- Delete ORANGE (removes the row under the cursor), Clear RED (wipes all), close YELLOW.
+local _btn_cap = {
+    a = "Info",
+    e = "Error",
+    w = "Warn",
+    i = "Info",
+    d = "Debug",
+    r = "Refresh",
+    D = "Delete",
+    C = "Clear",
+    q = "Close",
+}
 
 -- The history filter bar's BUTTONS, in display order. Each: key (the letter + hotkey), label, lvl (the level
--- it filters to, nil for All / actions), filt (a filter vs an action).
+-- it filters to, nil for All / actions), filt (a filter vs an action). Delete / Clear are UPPERCASE (Shift-d /
+-- Shift-c) so a destructive action is a deliberate keystroke, never a stray `d` (the Debug filter) or `c`.
+-- Delete acts on the message under the cursor — which STAYS put while the bar sub-sector is focused.
 local _bar_btns = {
     { id = "all", k = "a", l = "All", lvl = nil, filt = true },
     { id = "error", k = "e", l = "Error", lvl = "error", filt = true },
@@ -1156,6 +1242,8 @@ local _bar_btns = {
     { id = "info", k = "i", l = "Info", lvl = "info", filt = true },
     { id = "debug", k = "d", l = "Debug", lvl = "debug", filt = true },
     { id = "refresh", k = "r", l = "Refresh", lvl = nil, filt = false },
+    { id = "delete", k = "D", l = "Delete", lvl = nil, filt = false },
+    { id = "clear", k = "C", l = "Clear", lvl = nil, filt = false },
     { id = "close", k = "q", l = "Close", lvl = nil, filt = false },
 }
 
@@ -1366,6 +1454,30 @@ local function _history_zone_render(focus)
         render()
         publish()
     end
+    local function clear_all() -- wipe the ENTIRE message history and close (nothing left to browse)
+        M.clear()
+        _hist_dismissed = true
+        _hist_rendered = 0
+        seg:clear()
+        ma.blur()
+    end
+    local function delete_current() -- delete the ONE message under the cursor, keep browsing
+        local idx = ma.content_row and ma.content_row("history")
+        if idx == nil then
+            return -- cursor not on a message row (e.g. the "No … records" placeholder)
+        end
+        local hi = _hist_index_at(idx, _hist_filter)
+        if not hi then
+            return
+        end
+        table.remove(_history, hi)
+        if #_history == 0 then
+            clear_all() -- last one gone → nothing to browse
+        else
+            render()
+            publish()
+        end
+    end
     local function run_btn(b) -- activate a bar button (a hotkey, or <CR> on the focused one)
         if not b then
             return
@@ -1375,6 +1487,10 @@ local function _history_zone_render(focus)
         elseif b.k == "r" then
             render()
             publish() -- Refresh
+        elseif b.k == "D" then
+            delete_current() -- Delete: the message under the cursor (cursor stays put while the bar is focused)
+        elseif b.k == "C" then
+            clear_all() -- Clear: wipe the whole history and close (nothing left to browse)
         elseif b.k == "q" then
             _hist_dismissed = true -- closed by the reader: do not let the blur repaint bring it back
             _hist_rendered = 0
@@ -1414,6 +1530,8 @@ local function _history_zone_render(focus)
                 render()
                 publish()
             end,
+            C = clear_all, -- Clear: wipe the whole message history and close (Shift-c, a deliberate keystroke)
+            D = delete_current, -- Delete the ONE message under the cursor (Shift-d; `d` is the Debug filter)
             -- BAR navigation — only while the bar SUB-SECTOR is focused (reached with `<C-k>`): `l`/`h` move the
             -- focused button, `<CR>` activates it (chevrons scroll-follow it). From the content they are inert.
             l = function()
@@ -1564,6 +1682,7 @@ local _KIND_LEVEL = {
     shell_out = levels.DEBUG,
     lua_print = levels.DEBUG,
     verbose = levels.DEBUG,
+    confirm = levels.INFO,
 }
 
 --- Convert content fragments [{attr_id, text}, …] to a plain string.
@@ -1639,7 +1758,9 @@ local function _attach_ui()
                     if text == "" then
                         return
                     end
-                    if _dedup_check(text) then
+                    -- Never dedup a `confirm` prompt: a re-prompt (e.g. inputlist() after an invalid answer)
+                    -- carries the same text, and dropping it would leave the still-blocking prompt invisible.
+                    if kind ~= "confirm" and _dedup_check(text) then
                         return
                     end
 
@@ -1650,7 +1771,26 @@ local function _attach_ui()
                     _append_history(text, lvl, {})
 
                     if behaviour == "toast" then
-                        _show_toast(text, lvl, { timeout = timeout })
+                        if kind == "confirm" then
+                            -- A blocking prompt (:confirm / confirm() / inputlist() / z=): STICKY (timeout 0)
+                            -- so it stays while the editor blocks reading the answer. The answer is read through
+                            -- a cmdline, whose CmdlineLeave is the reliable "prompt is over" signal under
+                            -- ext_messages (Neovim does NOT emit a msg_clear here); dismiss the sticky toast on
+                            -- the next CmdlineLeave (one-shot), deferred out of the cmdline / textlock context.
+                            local entry, elvl = _show_toast(text, lvl, { timeout = 0 })
+                            if entry then
+                                api.nvim_create_autocmd("CmdlineLeave", {
+                                    once = true,
+                                    callback = function()
+                                        vim.schedule(function()
+                                            _remove_toast_entry(elvl, entry)
+                                        end)
+                                    end,
+                                })
+                            end
+                        else
+                            _show_toast(text, lvl, { timeout = timeout })
+                        end
                     elseif behaviour == "zone" then
                         _history_zone_render(false) -- live passive display IN the zone (clean lines; bar on focus)
                     elseif _sinks[behaviour] then
@@ -1661,6 +1801,13 @@ local function _attach_ui()
                 if not ok then
                     io.stderr:write("[lvim-hud.notify] ext handler error: " .. tostring(err) .. "\n")
                 end
+            end)
+        elseif event == "msg_history_show" then
+            -- Native `:messages` under ext_messages emits this (instead of printing); open our single message
+            -- view so the command is not silently dead. We browse our OWN ring, so the emitted entries are
+            -- unused.
+            vim.schedule(function()
+                M.history()
             end)
         end
     end)
@@ -1701,6 +1848,8 @@ function M.msg_highlights()
         Info = accent("info", "blue"),
         Debug = accent("debug", "purple"),
         Refresh = accent("refresh", "green"),
+        Delete = accent("delete", "orange"),
+        Clear = accent("clear", "red"),
         Close = accent("close", "yellow"),
     }
     -- the filter bar's per-part tint strengths come from config (history.bar.tints) — fully customisable.

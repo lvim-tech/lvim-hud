@@ -38,7 +38,17 @@ function M.signs(buf, lnum, filter)
     if not api.nvim_buf_is_valid(buf) then
         return {}
     end
-    local ok, marks = pcall(api.nvim_buf_get_extmarks, buf, -1, { lnum - 1, 0 }, { lnum - 1, -1 }, { details = true })
+    -- `type = "sign"` filters to sign/number/line-highlight extmarks in C, so this per-line hot path no longer
+    -- iterates (and rejects) every hl / virt_text extmark on the line (semantic tokens, rainbow). Number-only
+    -- signs still pass — they carry the sign decoration flags (`number_hl_group`) the "sign" class covers.
+    local ok, marks = pcall(
+        api.nvim_buf_get_extmarks,
+        buf,
+        -1,
+        { lnum - 1, 0 },
+        { lnum - 1, -1 },
+        { details = true, type = "sign" }
+    )
     if not ok or not marks then
         return {}
     end

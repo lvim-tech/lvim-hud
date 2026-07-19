@@ -220,6 +220,7 @@ require("lvim-hud").setup({
             echo = "toast",
             bufwrite = "toast",
             undo = "toast",
+            confirm = "toast", -- :confirm / confirm() / inputlist() / z= prompt text — kept sticky until answered
             shell_out = "history",
             lua_print = "history",
             verbose = "history",
@@ -243,9 +244,38 @@ require("lvim-hud").setup({
         level_names = { trace = "Trace", debug = "Debug", info = "Info", warn = "Warn", error = "Error" },
         -- The :Messages history zone (rendered in lvim-msgarea when installed) + its filter bar.
         history = {
-            target = "cmdline", -- fallback pager when the zone is off: "cmdline" | "split"
             title = "Messages", -- the panel label
+            -- Seconds a message stays PASSIVELY visible in the zone while you are NOT in it (each runs its own
+            -- clock; descending into the zone lists the whole history and pauses the countdowns). 0 = always.
+            hide_after = 10,
+            -- The circle glyph in front of each message that DRAINS (FULL → EMPTY) as its countdown runs out.
+            -- Set to false (or {}) for no glyph.
+            life_icons = {
+                "\u{f0aa5}",
+                "\u{f0aa4}",
+                "\u{f0aa3}",
+                "\u{f0aa2}",
+                "\u{f0aa1}",
+                "\u{f0aa0}",
+                "\u{f0a9f}",
+                "\u{f0a9e}",
+            },
             statusline = true, -- true: publish title + count to the statusline; false: title at the LEFT of the bar
+            -- Background-tint strength of the message rows (blend of the level colour toward the bg).
+            tints = {
+                row = 0.05, -- the whole row + its text
+                icon = 0.1, -- the level icon's cell (bold badge)
+                active = 0.2, -- the row under the cursor while you are IN the zone
+            },
+            -- The accent each level (and each bar action) is tinted with: a palette KEY or a literal "#rrggbb".
+            colors = {
+                error = "red",
+                warn = "orange",
+                info = "blue",
+                debug = "purple",
+                refresh = "green", -- the bar's Refresh button
+                close = "yellow", -- the bar's Close button
+            },
             bar = {
                 key_pad = { 1, 1 }, -- the hotkey BADGE padding { front, back }
                 label_pad = { 1, 1 }, -- the NAME padding { front, back }

@@ -147,7 +147,10 @@ function M.devicon(buf, bar_bg)
     if not icon or icon == "" then
         return nil
     end
-    local group = "LvimUiChromeDevicon_" .. (ext ~= "" and ext or "none")
+    -- Sanitise the extension into a valid highlight-group suffix: a non-word char (`c++`, `d-`) is illegal in
+    -- a group name, so nvim_set_hl fails SILENTLY and the invalid chars leak into the `%#…#` statusline token.
+    local suffix = (ext ~= "" and ext:gsub("%W", "_")) or "none"
+    local group = "LvimUiChromeDevicon_" .. suffix
     pcall(api.nvim_set_hl, 0, group, { fg = color, bg = bar_bg })
     return icon, group
 end

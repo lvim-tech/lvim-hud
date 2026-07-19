@@ -25,6 +25,20 @@ local _active = false
 ---@type LvimChromeOverlayState?  the statusline owner (e.g. an open finder) snapshotted when the cmdline opens OVER
 --- it, put back on close so its title/counter survive instead of being cleared.
 local _saved_status = nil
+---@type boolean  true while THIS cmdline owns the statusline overlay (snapshotted it on open) and must restore
+--- it on close. A routed MESSAGE dismissal shares `close()` but never snapshotted — it must NOT touch the line.
+local _owns_status = false
+---@type boolean  true while the cmdline is HOSTED in the msgarea zone (its render reserved rows). A routed
+--- message never reserves rows, so `close()` must not run the zone reflow (`done()`) for one.
+local _hosted = false
+---@type integer  bumped on every cmdline_show; a nested-level hide's scheduled teardown bails once a newer
+--- show has arrived (the outer cmdline re-armed), so tearing down the nested float never kills the outer one.
+local _show_seq = 0
+---@type string?  the last routed message shown in the float (for a VimResized re-layout of a sticky message)
+local _last_message = nil
+---@type fun(msg: string)  forward decl: the routed-message layout (defined below M.input), referenced by the
+--- VimResized autocmd in M.setup above its definition — so it must be a module local in scope there.
+local render_message
 
 ---@type { content: table[], pos: integer, firstc: string, prompt: string, level: integer, block: table[], special: string? }
 local state = { content = {}, pos = 0, firstc = ":", prompt = "", level = 1, block = {}, special = nil }
@@ -112,9 +126,14 @@ end
 
 local function close()
     _active = false
-    if _cfg and status.is_enabled() and _cfg.statusline ~= false then
+    _last_message = nil
+    -- Restore the statusline overlay ONLY when THIS cmdline snapshotted it (a real cmdline open). A routed
+    -- message dismissal also calls close() but never owned the line — restoring here would run
+    -- overlay.restore(nil) → clear() and wipe whatever a still-open finder published to the bottom line.
+    if _owns_status then
         status.restore(_saved_status) -- put the prior owner's status (the finder) back, or clear if none
         _saved_status = nil
+        _owns_status = false
     end
     stop_blink()
     if _msg_timer then
@@ -129,10 +148,12 @@ local function close()
     _win = nil
     state.block, state.special = {}, nil
     vim.g.ui_cmdline_pos = nil -- drop the completion-menu anchor (blink falls back to its default)
-    -- Release the unified msgarea reservation (no-op when not hosted there).
-    if _host_provider and _host_provider.done then
+    -- Release the unified msgarea reservation — ONLY when this cmdline actually hosted rows there. A routed
+    -- message never reserved any, so it must not trigger a zone reflow (`done()`) on dismiss.
+    if _hosted and _host_provider and _host_provider.done then
         _host_provider.done()
     end
+    _hosted = false
 end
 
 --- Draw the current cmdline (and any :g/:'<,'> block) into the float.
@@ -315,6 +336,7 @@ local function render()
     if _host_provider and _host_provider.host then
         host = _host_provider.host(height)
     end
+    _hosted = host ~= nil -- whether we reserved zone rows this render (close() reflows only when true)
     -- Hosted: pin to the ABSOLUTE bottom of the screen, NOT to a bufpos inside the zone. The zone always
     -- sits flush with the screen bottom (its grid grows UPWARD), so the cmdline's bottom `height` rows are
     -- invariant — anchoring to the editor bottom keeps it put when the grid resizes, instead of riding a
@@ -432,8 +454,15 @@ function M.setup(cfg)
     api.nvim_create_autocmd("VimResized", {
         group = cmdline_group,
         callback = function()
-            if _win and api.nvim_win_is_valid(_win) then
+            if not (_win and api.nvim_win_is_valid(_win)) then
+                return
+            end
+            if _active then
                 render()
+            elseif _last_message then
+                -- A persistent routed message is showing (render() early-returns on `not _active`): re-anchor
+                -- it from the stored text so a shrink does not leave it mid-screen / clipped.
+                render_message(_last_message)
             end
         end,
     })
@@ -465,10 +494,15 @@ function M.setup(cfg)
         vim.ui_attach(ui_ns, { ext_cmdline = true }, function(event, ...)
             local a = { ... }
             if event == "cmdline_show" then
+                -- Every show (incl. the outer level re-arriving after a nested prompt closes) bumps the
+                -- generation, so a nested hide's scheduled teardown can tell it has been superseded.
+                _show_seq = _show_seq + 1
                 if not _active then
                     -- Opening OVER whatever owns the statusline (e.g. an active finder hosted in the zone
                     -- below): snapshot it so close() restores its title/counter instead of clearing the line.
-                    _saved_status = (_cfg and status.is_enabled() and _cfg.statusline ~= false) and status.save() or nil
+                    local owns = (_cfg and status.is_enabled() and _cfg.statusline ~= false) and true or false
+                    _saved_status = owns and status.save() or nil
+                    _owns_status = owns
                 end
                 _active = true
                 state.content = a[1] or {}
@@ -491,15 +525,27 @@ function M.setup(cfg)
                 state.special = a[1]
                 schedule(render)
             elseif event == "cmdline_hide" then
+                local level = a[1] or 1
                 -- Give the zone back our ROWS immediately (data only — no window API, so it is safe here). The
                 -- typed command runs SYNCHRONOUSLY, before the scheduled `close` below: a command that opens a
                 -- docked panel would otherwise reserve its rows on top of ours, and the zone would compose the
-                -- SUM for one frame — the panel visibly opening too tall and then shrinking. The real teardown
-                -- (closing the float, reflowing) stays scheduled: it touches windows.
-                if _host_provider and _host_provider.clear then
+                -- SUM for one frame — the panel visibly opening too tall and then shrinking. Skip it for a
+                -- NESTED hide (level > 1): the outer cmdline still owns its rows. The real teardown (closing the
+                -- float, reflowing) stays scheduled: it touches windows.
+                if level <= 1 and _host_provider and _host_provider.clear then
                     pcall(_host_provider.clear)
                 end
-                schedule(close)
+                -- Generation-guard the teardown: a nested (`<C-r>=`) hide is immediately followed by the outer
+                -- level's cmdline_show, which bumps _show_seq. Capture it now; the scheduled close bails when a
+                -- newer show has re-armed the cmdline — so closing the nested float never kills the restored
+                -- level-1 float (which would leave the live cmdline invisible).
+                local seq = _show_seq
+                schedule(function()
+                    if seq ~= _show_seq then
+                        return
+                    end
+                    close()
+                end)
             elseif event == "cmdline_block_show" then
                 state.block = a[1] or {}
                 schedule(render)
@@ -548,17 +594,12 @@ function M.input(opts, on_confirm)
     end
 end
 
---- Show a message in the cmdline float (notify "cmdline" sink target). Cleared with
---- <Esc>; auto-hides only when `message.timeout` > 0 (else it persists). Skipped while
---- a real cmdline is active.
+--- Lay out `msg` in the shared float — buffer lines + the icon badge + window placement, all from the CURRENT
+--- `vim.o.columns`/`vim.o.lines`. Pure rendering (no dismiss-key / timer setup), so a VimResized can re-run it
+--- to re-anchor a persistent message at the new size.
 ---@param msg string
----@return nil
-function M.message(msg)
+function render_message(msg)
     local m = (_cfg and _cfg.message) or {}
-    msg = tostring(msg or "")
-    if msg == "" or _active then
-        return
-    end
     local hl = m.hl or "LvimUiCmdlineInput"
     local badge = string.rep(" ", _cfg.badge_pad_left or 2)
         .. (m.glyph or "")
@@ -610,6 +651,21 @@ function M.message(msg)
     api.nvim_set_option_value("winhighlight", "Normal:" .. hl .. ",Search:None,CurSearch:None", { win = _win })
     api.nvim_set_option_value("wrap", true, { win = _win })
     pcall(api.nvim__redraw, { flush = true })
+end
+
+--- Show a message in the cmdline float (notify "cmdline" sink target). Cleared with
+--- <Esc>; auto-hides only when `message.timeout` > 0 (else it persists). Skipped while
+--- a real cmdline is active.
+---@param msg string
+---@return nil
+function M.message(msg)
+    local m = (_cfg and _cfg.message) or {}
+    msg = tostring(msg or "")
+    if msg == "" or _active then
+        return
+    end
+    _last_message = msg -- remembered so a VimResized can re-anchor a persistent (timeout 0) message
+    render_message(msg)
 
     -- Dismiss keys (config message.dismiss_keys; Vim notation, "esc" accepted). Observed
     -- via `typed` (raw key before mapping) so they work even when the key is remapped.
@@ -655,10 +711,11 @@ function M.message(msg)
     end
 end
 
-local _pager_win ---@type integer?
-local _pager_hwin ---@type integer?
 local _pager_prev ---@type integer?
 local _pager_guicursor ---@type string?
+---@type fun()?  closes the currently-open pager (set while one is open); called to tear a previous pager down
+--- before opening a new one, so a second M.pager never cross-closes the new pager's windows.
+local _pager_close = nil
 
 --- Focusable pager in a bottom float (cmdline-area), used by :Messages. The caller fills
 --- the buffer via opts.on_open(buf); opts.keymaps (key → {fn,label}) become buffer-local
@@ -667,6 +724,9 @@ local _pager_guicursor ---@type string?
 ---@return nil
 function M.pager(opts)
     opts = opts or {}
+    if _pager_close then
+        _pager_close() -- a pager is already open: tear it down before opening a new one
+    end
     _pager_prev = api.nvim_get_current_win()
     local buf = api.nvim_create_buf(false, true)
     if opts.on_open then
@@ -674,11 +734,17 @@ function M.pager(opts)
     end
 
     -- Title (left) + buttons (right), badge style; buttons collapse to just the key
-    -- badges when the width is too small to fit their labels.
+    -- badges when the width is too small to fit their labels. The title TEXT is uppercased through the
+    -- canonical lvim-ui casing (the icon box padding stays — it aligns with the history rows' icon column).
     local icon = (_cfg and _cfg.message and _cfg.message.glyph) or ""
+    local title_text = vim.trim(opts.title or "Messages")
+    local tc_ok, ui_util = pcall(require, "lvim-ui.util")
+    if tc_ok and ui_util.title_case then
+        title_text = ui_util.title_case(title_text)
+    end
     local title = {
         { "  " .. icon .. "  ", "LvimUiCmdlineCommandIcon" },
-        { " " .. vim.trim(opts.title or "Messages"), "LvimUiCmdlineCommand" },
+        { " " .. title_text, "LvimUiCmdlineCommand" },
     }
     local btns = {}
     for key, km in pairs(opts.keymaps or {}) do
@@ -730,7 +796,6 @@ function M.pager(opts)
         border = "none",
         zindex = 250,
     })
-    _pager_win = lwin
     api.nvim_set_option_value("cursorline", false, { win = lwin })
 
     -- Header window: a separate non-focusable 1-row float just above the list (lvim-space
@@ -747,7 +812,6 @@ function M.pager(opts)
         zindex = 251,
         focusable = false,
     })
-    _pager_hwin = hwin
     api.nvim_buf_set_lines(hbuf, 0, -1, false, { string.rep(" ", width) })
     local buttons = (vw(title) + vw(buttons_full) + 2 > width) and buttons_compact or buttons_full
     local pad = math.max(1, width - vw(title) - vw(buttons))
@@ -765,15 +829,16 @@ function M.pager(opts)
         if not (lwin and api.nvim_win_is_valid(lwin)) then
             return
         end
+        local w = vim.o.columns -- re-read so a resize uses the CURRENT width, not the stale open-time one
         local n = math.max(1, api.nvim_buf_line_count(buf))
         local h = math.max(1, math.min(n, math.floor(vim.o.lines * 0.5)))
         local row = math.max(1, vim.o.lines - h - vim.o.cmdheight - 1)
-        pcall(api.nvim_win_set_config, lwin, { relative = "editor", row = row, col = 0, width = width, height = h })
-        if _pager_hwin and api.nvim_win_is_valid(_pager_hwin) then
+        pcall(api.nvim_win_set_config, lwin, { relative = "editor", row = row, col = 0, width = w, height = h })
+        if hwin and api.nvim_win_is_valid(hwin) then
             pcall(
                 api.nvim_win_set_config,
-                _pager_hwin,
-                { relative = "editor", row = math.max(0, row - 1), col = 0, width = width, height = 1 }
+                hwin,
+                { relative = "editor", row = math.max(0, row - 1), col = 0, width = w, height = 1 }
             )
         end
     end
@@ -784,8 +849,11 @@ function M.pager(opts)
     vim.o.guicursor = "a:LvimUiPagerNoCursor"
 
     local function close_pager()
+        _pager_close = nil
         vim.o.guicursor = _pager_guicursor or vim.o.guicursor
-        for _, w in ipairs({ _pager_win, _pager_hwin }) do
+        -- Close THIS call's own windows (closure lwin/hwin), never module-level handles — so a second pager
+        -- opened while this one lingers can't cross-close the new windows through this one's WinLeave.
+        for _, w in ipairs({ lwin, hwin }) do
             if w and api.nvim_win_is_valid(w) then
                 pcall(api.nvim_win_close, w, true)
             end
@@ -798,11 +866,11 @@ function M.pager(opts)
                 pcall(api.nvim_buf_delete, b, { force = true })
             end
         end
-        _pager_win, _pager_hwin = nil, nil
         if _pager_prev and api.nvim_win_is_valid(_pager_prev) then
             pcall(api.nvim_set_current_win, _pager_prev)
         end
     end
+    _pager_close = close_pager
 
     -- Lock the pager down: only the action keys, `q`/<Esc>, and vertical navigation stay
     -- live; every other normal-mode key becomes a no-op so the buffer can't be driven into

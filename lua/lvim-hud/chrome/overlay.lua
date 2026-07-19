@@ -88,6 +88,11 @@ end
 function M.line()
     local cfg = config.chrome.overlay or {}
     local function seg(group, text, l, r)
+        -- `text` is RUNTIME display text (a publisher's title, the live typed cmdline/search string, a
+        -- subtitle, the counter) — escape every `%` to `%%` so it is drawn LITERALLY. Without this a typed
+        -- `%{expr}` / `%=` / `%%` would be parsed as a statusline item (the line is `%!`-evaluated), so a
+        -- `%{…}` in the query would EVALUATE a VimL expression. The surrounding `%#…#`/`%*` are ours.
+        text = tostring(text or ""):gsub("%%", "%%%%")
         return ("%%#%s#%s%s%s%%*"):format(group, string.rep(" ", l or 0), text, string.rep(" ", r or 0))
     end
     local parts = {}

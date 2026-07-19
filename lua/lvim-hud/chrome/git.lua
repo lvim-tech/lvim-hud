@@ -21,8 +21,19 @@ local M = {}
 
 ---@type { root: string, head: LvimChromeGitHead }?  the cached status (nil outside a repo)
 local cache = nil
----@type uv.uv_fs_poll_t?
-local poller = nil
+---@type uv.uv_fs_poll_t[]  the .git/HEAD + .git/logs/HEAD watchers (empty outside a repo)
+local pollers = {}
+---@type integer  bumped on every M.start; a scheduled root callback from a superseded start bails
+local start_gen = 0
+
+--- Stop and close every fs_poll watcher.
+local function stop_pollers()
+    for _, p in ipairs(pollers) do
+        p:stop()
+        p:close()
+    end
+    pollers = {}
+end
 
 --- The cached git status, or nil when the cwd is not inside a git repository.
 ---@return { root: string, head: LvimChromeGitHead }?
@@ -107,42 +118,56 @@ function M.update(root)
 end
 
 --- Start (or restart) the poller for the cwd — resolving the repo root ASYNCHRONOUSLY. Clears the cache +
---- stops the poller outside a repo; otherwise refreshes and watches `.git/HEAD`, updating only on mtime change.
+--- stops the pollers outside a repo; otherwise refreshes and watches BOTH `.git/HEAD` and `.git/logs/HEAD`,
+--- updating only on mtime change.
 ---@param interval? integer  poll interval in ms (default 1000)
 function M.start(interval)
+    -- A rapid DirChanged can spawn two `rev-parse` jobs; their callback order is not guaranteed, so a stale
+    -- cwd's callback could otherwise install a poller for the OLD root. Tag this start with a generation and
+    -- bail from any scheduled callback once a newer start has run.
+    start_gen = start_gen + 1
+    local gen = start_gen
     local ok = pcall(vim.system, { "git", "rev-parse", "--show-toplevel" }, { text = true }, function(res)
         local root = (res.code == 0 and type(res.stdout) == "string") and vim.trim(res.stdout) or nil
         vim.schedule(function()
+            if gen ~= start_gen then
+                return
+            end
             if not root or root == "" then
                 cache = nil
-                if poller then
-                    poller:stop()
-                    poller:close()
-                    poller = nil
-                end
+                stop_pollers()
                 return
             end
 
             M.update(root)
+            stop_pollers()
 
-            if poller then
-                poller:stop()
-                poller:close()
-                poller = nil
-            end
-
-            poller = uv.new_fs_poll()
-            poller:start(root .. "/.git/HEAD", interval or 1000, function(err, prev, now)
+            -- Watch `.git/HEAD` (rewritten ONLY on checkout / detach) AND `.git/logs/HEAD` (the reflog —
+            -- appended on EVERY HEAD movement incl. commits, resets, amends), so the abbrev / oid / subject /
+            -- tag-distance refresh after a commit, not only after the next branch switch. Same callback; a repo
+            -- with the reflog disabled simply never fires the second poll (and a fresh repo's missing reflog
+            -- reports an err, which is ignored until the file appears).
+            local function on_change(err, prev, now)
                 if err then
                     return
                 end
                 if prev and now and prev.mtime.sec ~= now.mtime.sec then
                     vim.schedule(function()
+                        if gen ~= start_gen then
+                            return
+                        end
                         M.update(root)
                         pcall(vim.cmd, "redrawstatus")
                     end)
                 end
-            end)
+            end
+            for _, path in ipairs({ root .. "/.git/HEAD", root .. "/.git/logs/HEAD" }) do
+                local p = uv.new_fs_poll()
+                if p then
+                    p:start(path, interval or 1000, on_change)
+                    pollers[#pollers + 1] = p
+                end
+            end
         end)
     end)
     if not ok then

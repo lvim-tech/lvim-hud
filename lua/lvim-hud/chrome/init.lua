@@ -169,12 +169,6 @@ function M.setup()
         end
     end
 
-    -- ── statusline ───────────────────────────────────────────────────────────────────
-    -- The component installs its OWN per-segment invalidation autocmds — derived from each segment's `events`
-    -- via the shared engine (cursor / text events only invalidate; everything else forces one redraw) — plus
-    -- its side effects (git poller restart on DirChanged, dynamic-hl reset on ColorScheme).
-    M.statusline.install_autocmds(grp)
-
     -- the float guard (the last regular window, for the statusline) + the winbar / tabline / statuscolumn — the
     -- LATTER only while their component is enabled, so an only-statusline setup does NOT re-apply windows on
     -- every window event. NO explicit `redrawtabline`: the `%!` tabline is re-evaluated by Neovim's native
@@ -198,6 +192,13 @@ function M.setup()
     -- VimEnter already fired (a live re-setup), activate immediately.
     local function activate()
         git.start((cfg.git or {}).poll_ms or 1000)
+        -- The statusline component installs its OWN per-segment invalidation autocmds — derived from each
+        -- segment's `events` via the shared engine (cursor / text events only invalidate; everything else
+        -- forces one redraw) — plus its side effects (git poller restart on DirChanged, dynamic-hl reset on
+        -- ColorScheme). Done HERE (VimEnter-deferred), not in setup(): a segments FUNCTION whose `require`
+        -- target loads after setup() resolves to `{}` at setup time, so installing then would register NO
+        -- invalidation autocmds and the named+`events` segments would cache stale forever.
+        M.statusline.install_autocmds(grp)
         if cfg.statusline.enabled then
             vim.o.statusline = STATUSLINE
         end

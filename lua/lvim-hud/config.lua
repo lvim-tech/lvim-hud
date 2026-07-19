@@ -333,6 +333,10 @@ M.notify = {
         echo = "toast",
         bufwrite = "toast",
         undo = "toast",
+        -- The message that PRECEDES a blocking prompt (:confirm, confirm(), inputlist(), z=). MUST be visible
+        -- (the editor then blocks in getchar with nothing else on screen); routed to a toast that notify keeps
+        -- STICKY until the prompt ends (its `msg_clear`). Routing it to "history" would hide the prompt.
+        confirm = "toast",
         shell_out = "history",
         lua_print = "history",
         verbose = "history",
@@ -368,7 +372,6 @@ M.notify = {
     -- ── Message history / :Messages zone ─────────────────────────────────────────────────────────────
     -- The styled message panel (lvim-msgarea) + its filter bar. Fully customisable here.
     history = {
-        target = "cmdline", -- fallback pager when the zone is off: "cmdline" | "split"
         title = "Messages", -- the panel label
         -- TRANSIENT display: how many SECONDS a message stays on screen in the zone while you are NOT in it.
         -- Each message runs its OWN clock — a newer one lands on top with a fresh countdown and does not
