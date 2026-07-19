@@ -208,6 +208,7 @@ M.chrome = {
 ---@field caret           string   The caret glyph drawn in the externalised cmdline (no real cursor there)
 ---@field max_height      integer|boolean Max float height; false = auto (≈ half the screen)
 ---@field newline_keys    string[] Cmdline-mode keys that insert a literal newline ({} to disable)
+---@field keep_open_on_empty_bs boolean  Backspace/Ctrl-H on an EMPTY cmdline is a no-op instead of Neovim's default abort (default true; Esc / Ctrl-C still abort)
 ---@field modes           table    firstc → { glyph, label, hl } per command-line mode (: / ? = @)
 ---@field fallback        table    { glyph, label, hl } used when no mode entry matches
 ---@field patterns        table[]  Content sub-modes for ":" commands (first match wins), each mode entry + a `match`
@@ -245,6 +246,10 @@ M.cmdline = {
     -- Cmdline-mode keys that insert a literal newline (multi-line command input).
     -- Set to {} to disable.
     newline_keys = { "<M-CR>" },
+    -- <BS>/<C-h> on an EMPTY cmdline is a no-op (the cmdline stays open) instead of Neovim's default, which
+    -- ABORTS the cmdline there — a surprising exit while deleting back through a command. Esc / <C-c> still
+    -- abort. Set false for the stock behaviour.
+    keep_open_on_empty_bs = true,
     -- firstc -> { glyph, label, hl }. The left panel shows " <glyph> <label> "; for the
     -- input mode (@) the live prompt (e.g. "New name: ") is used instead of the label.
     modes = {

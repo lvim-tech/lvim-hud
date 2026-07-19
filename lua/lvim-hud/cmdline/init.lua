@@ -71,7 +71,9 @@ local function build()
     local function pair(name, col)
         g[name] = { fg = col, bg = b(col, bg, 0.1) }
         g[name .. "Icon"] = { fg = col, bg = b(col, bg, 0.2), bold = true }
-        g[name .. "Caret"] = { fg = col } -- the thin-bar caret glyph (matches the mode's text colour)
+        -- BLOCK cursor: the caret is a highlight ON the char under it (not a glyph), so fill the cell with the
+        -- mode colour and draw the char in the editor bg — reverse-style, the char stays readable.
+        g[name .. "Caret"] = { fg = bg, bg = col }
     end
     pair("LvimUiCmdlineCommand", c.blue)
     pair("LvimUiCmdlineSearch", c.green)
@@ -303,26 +305,45 @@ local function render()
         })
     end
 
-    -- Thin-bar caret (no real cursor is drawn while the cmdline is externalised); blinks. A `▏` overlay in the
-    -- mode's colour (blue for `:` command — matching the typed text — green for search, …) instead of a block.
+    -- BLOCK caret. A terminal grid can't place a thin bar BETWEEN cells (overlay HIDES the next char, inline
+    -- SHIFTS it, an empty inline placeholder leaves a visible gap) and, externalised, there is no hardware cursor
+    -- to borrow — so the caret is a HIGHLIGHT on the cell UNDER it (the char to the right of the insertion point):
+    -- the standard terminal block cursor. It changes NO text — no shift, no width change, no wrap change; the char
+    -- stays readable (the `<mode.hl>Caret` group is reverse / distinct fg+bg); the blink just adds/removes the
+    -- highlight. The last buffer line carries a trailing space (built above) so the end-of-command position also
+    -- has a cell to colour.
     if _cursor_on then
         local crow = cmd_row + cur_sub - 1
         -- The caret's byte column = the gutter (`pad`, which the buffer lines were built with) + the cursor's
         -- offset into the sub-line. Use `#pad` directly rather than re-deriving `badge_w + 1`, so the caret can
         -- never drift from the pad the lines actually carry (the two must stay identical).
-        local ccol = #pad + cur_col
         local cline = lines[crow + 1] or ""
-        api.nvim_buf_set_extmark(buf, _ns, crow, math.min(ccol, #cline), {
-            -- The caret GLYPH (config.cmdline.caret, default `▎` ≈ the finders' beam-cursor width); its colour
-            -- is the mode's `<mode.hl>Caret` group.
-            virt_text = { { _cfg.caret or "▎", mode.hl .. "Caret" } },
-            virt_text_pos = "overlay",
-            hl_mode = "combine",
-        })
+        local ccol = math.min(#pad + cur_col, #cline)
+        -- Highlight ONE utf-8 codepoint (read the lead byte for its length) so a multibyte glyph under the cursor
+        -- is coloured WHOLE, never cut mid-sequence.
+        local lead = cline:byte(ccol + 1)
+        local clen = 1
+        if lead then
+            if lead >= 0xF0 then
+                clen = 4
+            elseif lead >= 0xE0 then
+                clen = 3
+            elseif lead >= 0xC0 then
+                clen = 2
+            end
+        end
+        if ccol < #cline then
+            api.nvim_buf_set_extmark(buf, _ns, crow, ccol, {
+                end_col = math.min(ccol + clen, #cline),
+                hl_group = mode.hl .. "Caret",
+                hl_mode = "replace",
+                priority = 300,
+            })
+        end
     end
 
-    -- Grow vertically: each (block + prompt) line wraps at the window width, so the
-    -- height is the sum of wrapped rows, capped so the float never covers the screen.
+    -- Grow vertically: each (block + prompt) line wraps at the window width, so the height is the sum of wrapped
+    -- rows, capped so the float never covers the screen. The block caret is a highlight (adds no width).
     local width = vim.o.columns
     local height = 0
     for _, l in ipairs(lines) do
@@ -364,10 +385,11 @@ local function render()
             border = "none",
             focusable = false,
         }
-    if _win and api.nvim_win_is_valid(_win) then
-        api.nvim_win_set_config(_win, win_config)
-    else
+    local opened = not (_win and api.nvim_win_is_valid(_win))
+    if opened then
         _win = api.nvim_open_win(buf, false, win_config)
+    else
+        api.nvim_win_set_config(_win, win_config)
     end
     api.nvim_set_option_value("winhighlight", "Normal:" .. mode.hl .. ",Search:None,CurSearch:None", { win = _win })
     api.nvim_set_option_value("wrap", true, { win = _win })
@@ -380,8 +402,9 @@ local function render()
         vim.g.ui_cmdline_pos = { pos[1], pos[2] }
     end
 
-    -- Force an immediate redraw: cmdline events fire in a fast context, so without this
-    -- the float only becomes visible on the next keystroke (not on the initial firstc).
+    -- Force an immediate redraw: the initial firstc frame (and the blink toggle on an otherwise-idle screen)
+    -- would appear a keystroke late without it. This is safe for a PASTE now — `schedule_render()` coalesces the
+    -- per-character burst into ONE render, so this flush runs once per burst, not per character.
     pcall(api.nvim__redraw, { flush = true })
 end
 
@@ -417,6 +440,29 @@ local function schedule(fn)
     end
 end
 
+---@type boolean  a render is already queued for this frame — coalesce the burst of cmdline_show/pos events a
+--- PASTE fires (one per character) into a SINGLE render of the final state. Without this each character forced
+--- its own `nvim__redraw({flush})` (render's tail), so a long paste crawled in visibly, character by character.
+--- `render()` reads the LIVE `state`, so the one queued render always draws the latest content.
+local _render_queued = false
+
+--- Queue a coalesced render + (idempotent) blink start. ALWAYS defers via `vim.schedule` (never the conditional
+--- `schedule()` helper): `CmdlineChanged` fires in a NON-fast context, where `schedule()` would run `render()`
+--- synchronously and clear the flag before the next character — so the burst never coalesced and every pasted
+--- character forced its own full render + `nvim__redraw({flush})`. Deferring unconditionally lets a whole
+--- paste's events queue behind ONE render of the final `state`.
+local function schedule_render()
+    if _render_queued then
+        return
+    end
+    _render_queued = true
+    vim.schedule(function()
+        _render_queued = false
+        render()
+        start_blink()
+    end)
+end
+
 --- Enable the self-rendered cmdline (ext_cmdline) + register highlights.
 ---@param cfg table  the merged lvim-hud.config.cmdline
 ---@return nil
@@ -444,7 +490,7 @@ function M.setup(cfg)
             state.pos = vim.fn.getcmdpos() - 1
             state.special = nil
             _cursor_on = true
-            schedule(render)
+            schedule_render() -- coalesced: a paste fires CmdlineChanged (and cmdline_show) per character
         end,
     })
     -- Re-render on resize: the float spans the full width and sits at the bottom (both from
@@ -477,6 +523,18 @@ function M.setup(cfg)
         -- Cmdline-mode keys that insert a literal newline for multi-line command input.
         for _, key in ipairs(cfg.newline_keys or {}) do
             vim.keymap.set("c", key, "<C-v><C-j>", { desc = "lvim-hud cmdline: newline" })
+        end
+
+        -- Keep the cmdline OPEN when <BS> is pressed on an EMPTY line. Neovim's default ABORTS the cmdline there
+        -- (a surprising exit while deleting back through a command); instead make it a no-op — the cmdline stays,
+        -- and with any text <BS> deletes as usual. Esc / <C-c> still abort. Gated on `keep_open_on_empty_bs`
+        -- (default true). `<C-h>` mirrors <BS> the same way.
+        if cfg.keep_open_on_empty_bs ~= false then
+            for _, key in ipairs({ "<BS>", "<C-h>" }) do
+                vim.keymap.set("c", key, function()
+                    return vim.fn.getcmdline() == "" and "" or key
+                end, { expr = true, desc = "lvim-hud cmdline: keep open on empty backspace" })
+            end
         end
 
         -- Expose a notify "cmdline" printer: host maps message kinds to it via
@@ -512,18 +570,15 @@ function M.setup(cfg)
                 state.level = a[6] or 1
                 state.special = nil
                 _cursor_on = true
-                schedule(function()
-                    render()
-                    start_blink()
-                end)
+                schedule_render()
             elseif event == "cmdline_pos" then
                 state.pos = a[1] or 0
                 state.special = nil
                 _cursor_on = true
-                schedule(render)
+                schedule_render()
             elseif event == "cmdline_special_char" then
                 state.special = a[1]
-                schedule(render)
+                schedule_render()
             elseif event == "cmdline_hide" then
                 local level = a[1] or 1
                 -- Give the zone back our ROWS immediately (data only — no window API, so it is safe here). The
