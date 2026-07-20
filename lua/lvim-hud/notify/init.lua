@@ -1298,9 +1298,21 @@ local function _history_bar(filter, opts, sel, hover)
         sel = sel,
         hover = hover,
         title = opts.title,
-        title_hl = "LvimUiMsgAreaTitle",
+        -- fg-only: the title sits ON the strip below and takes its depth with it (a boxed title would stay at
+        -- the resting tint and read as a lighter patch cut out of its own bar once the strip deepens).
+        title_hl = "LvimUiMsgAreaTitleText",
     })
-    local hls = { { eol = true, hl = "LvimUiBarFill", priority = 1 } } -- the continuous bar STRIP under the row
+    -- The continuous STRIP under the row. This row is a TITLE row (msgarea draws it as the segment's `title`),
+    -- so it wears the zone title's own blue tint — `LvimUiMsgAreaTitleFill`, the bg-only sibling of
+    -- `LvimUiMsgAreaTitle` — not the yellow `LvimUiBarFill` of a plain button bar. A msgarea title row WITHOUT
+    -- the filter bar is already one blue band (a bare string hl = a full-row eol span); this one carried the
+    -- button-bar fill instead, so `:Messages` was the only title band in the set that was not blue.
+    -- Two depths, like every other title band: the bar is only ever DRAWN while the messages segment is
+    -- focused (`title_when_focused`), so the meaningful "active" here is one level finer — the BAR SUB-SECTOR
+    -- (`hover`, set only while the cursor is on the buttons rather than on the message list below). Stepping
+    -- onto the bar deepens the whole strip; browsing the messages leaves it at rest.
+    local fill = hover and "LvimUiMsgAreaTitleFillHover" or "LvimUiMsgAreaTitleFill"
+    local hls = { { eol = true, hl = fill, priority = 1 } }
     for _, sp in ipairs(res.spans) do
         hls[#hls + 1] = { c0 = sp[1], c1 = sp[2], hl = sp[3], priority = 100 }
     end
