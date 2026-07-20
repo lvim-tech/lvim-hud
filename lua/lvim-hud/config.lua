@@ -114,8 +114,11 @@ M.chrome = {
         showtabline = 2, -- 0 never / 1 when ≥2 tabpages / 2 always
         -- The top tabline, rendered by lvim-hud.chrome.engine. NO predefined sections (like heirline) — YOU
         -- define them in your config. `segments` = a LIST of specs, OR a FUNCTION returning one. Compose from
-        -- chrome.parts (seg / icons / excluded / unique_name) + `engine.click_region(key, fn, text)` for
-        -- clickable window / tab CELLS (tabby's functionality). Unset ⇒ a blank tabline.
+        -- chrome.parts (seg / icons / excluded / listable / unique_name) + `engine.click_region(key, fn, text)`
+        -- for clickable window / tab CELLS (tabby's functionality). Unset ⇒ a blank tabline.
+        -- A window-list section wants BOTH guards: `excluded(buf, "tabline")` (this blacklist — pass the
+        -- component name, or there is nothing to check and everything passes) and `listable(buf)`, which keeps
+        -- an unnamed buffer out unless it is a real unsaved draft rather than a panel's scratch.
         ---@type LvimChromeSegment[]|fun(): LvimChromeSegment[]|nil
         segments = nil,
         -- this component's OWN buftype/filetype blacklist (tabline hidden when the tab holds only these). `qf` is

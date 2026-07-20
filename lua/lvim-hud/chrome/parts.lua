@@ -128,6 +128,23 @@ function M.excluded(buf, kind)
         or vim.tbl_contains(ex.filetype or {}, vim.bo[buf].filetype)
 end
 
+--- True when `buf` deserves a CELL in a window/buffer bar (the tabline's window list).
+---
+--- A NAMED buffer always does — it is a file, and the component's own `exclude` blacklist decides the rest.
+--- An UNNAMED one only does when it is a genuine unsaved DRAFT: a normal buffer (`buftype == ""`, so never a
+--- panel / terminal / help / quickfix scratch) that already holds content not yet written to a file. That is
+--- the whole rule — without it every panel with an unnamed scratch buffer, and the empty startup buffer,
+--- claimed an indistinguishable "[No Name]" cell, and the bar filled up with them.
+---@param buf? integer
+---@return boolean
+function M.listable(buf)
+    buf = buf or 0
+    if api.nvim_buf_get_name(buf) ~= "" then
+        return true
+    end
+    return vim.bo[buf].buftype == "" and vim.bo[buf].modified
+end
+
 --- The file icon for `buf` + a per-extension highlight group carrying its colour on the bar bg. Returns nil
 --- when the buffer is unnamed or the resolved glyph is empty. The icon comes from the configured
 --- `icon_provider` (lvim-icons / nvim-web-devicons / mini.icons, resolved via lvim-utils.icons); the colour
