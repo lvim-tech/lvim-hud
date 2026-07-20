@@ -1291,28 +1291,28 @@ local function _history_bar(filter, opts, sel, hover)
     end
     -- ui.bar draws the whole row: a left "Messages" TITLE (shown only when NOT on the statusline) with the
     -- buttons stacked to the RIGHT in the remaining width; without a title they sit at the left.
-    local res = uibar.render({
+    --
+    -- Built by the SHARED `ui.bar.title_band` — the one builder behind every title bar in the set (a surface
+    -- frame's chrome band, a msgarea segment title, and this one). It owns the canon: the two-depth strip, the
+    -- fg-only uppercase title over it, the padding. This consumer supplies only what is ITS own — the level
+    -- badges as `items`, and the ZONE's title tint pair instead of the peek one.
+    --
+    -- `focused`: the bar is only ever DRAWN while the messages segment is focused (`title_when_focused`), so
+    -- the meaningful "active" here is one level finer — the BAR SUB-SECTOR (`hover` is set only while the
+    -- cursor is on the buttons rather than on the message list below). Stepping onto the bar deepens the
+    -- whole strip; browsing the messages leaves it at rest.
+    local res = uibar.title_band({
         items = items,
         width = opts.width or vim.o.columns,
-        align = (opts.title and opts.title ~= "") and "right" or "left",
         sel = sel,
         hover = hover,
-        title = opts.title,
-        -- fg-only: the title sits ON the strip below and takes its depth with it (a boxed title would stay at
-        -- the resting tint and read as a lighter patch cut out of its own bar once the strip deepens).
-        title_hl = "LvimUiMsgAreaTitleText",
+        text = opts.title,
+        focused = hover ~= nil,
+        fill_hl = "LvimUiMsgAreaTitleFill",
+        fill_hl_focus = "LvimUiMsgAreaTitleFillHover",
+        text_hl = "LvimUiMsgAreaTitleText",
     })
-    -- The continuous STRIP under the row. This row is a TITLE row (msgarea draws it as the segment's `title`),
-    -- so it wears the zone title's own blue tint — `LvimUiMsgAreaTitleFill`, the bg-only sibling of
-    -- `LvimUiMsgAreaTitle` — not the yellow `LvimUiBarFill` of a plain button bar. A msgarea title row WITHOUT
-    -- the filter bar is already one blue band (a bare string hl = a full-row eol span); this one carried the
-    -- button-bar fill instead, so `:Messages` was the only title band in the set that was not blue.
-    -- Two depths, like every other title band: the bar is only ever DRAWN while the messages segment is
-    -- focused (`title_when_focused`), so the meaningful "active" here is one level finer — the BAR SUB-SECTOR
-    -- (`hover`, set only while the cursor is on the buttons rather than on the message list below). Stepping
-    -- onto the bar deepens the whole strip; browsing the messages leaves it at rest.
-    local fill = hover and "LvimUiMsgAreaTitleFillHover" or "LvimUiMsgAreaTitleFill"
-    local hls = { { eol = true, hl = fill, priority = 1 } }
+    local hls = { { eol = true, hl = res.fill, priority = 1 } }
     for _, sp in ipairs(res.spans) do
         hls[#hls + 1] = { c0 = sp[1], c1 = sp[2], hl = sp[3], priority = 100 }
     end
