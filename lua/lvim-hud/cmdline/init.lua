@@ -34,6 +34,7 @@ local _hosted = false
 ---@type integer  bumped on every cmdline_show; a nested-level hide's scheduled teardown bails once a newer
 --- show has arrived (the outer cmdline re-armed), so tearing down the nested float never kills the outer one.
 local _show_seq = 0
+
 ---@type string?  the last routed message shown in the float (for a VimResized re-layout of a sticky message)
 local _last_message = nil
 ---@type fun(msg: string)  forward decl: the routed-message layout (defined below M.input), referenced by the
@@ -552,7 +553,23 @@ function M.setup(cfg)
         vim.ui_attach(ui_ns, { ext_cmdline = true }, function(event, ...)
             local a = { ... }
             if event == "cmdline_show" then
-                -- Every show (incl. the outer level re-arriving after a nested prompt closes) bumps the
+                -- Neovim RE-EMITS cmdline_show after any forced screen redraw — including the flush at the
+                -- tail of our own render() and every incsearch repaint during a `/`/`?` search — carrying the
+                -- SAME content we are already showing. Acting on such a spurious show (resetting the blink
+                -- cursor to on + scheduling a render whose redraw re-emits yet another show) is the feedback
+                -- loop behind the search flicker AND the blink stutter. Ignore a show that changes nothing;
+                -- only a real content / cursor / mode / prompt / level change falls through and renders.
+                if
+                    _active
+                    and flatten(a[1] or {}) == flatten(state.content)
+                    and (a[2] or 0) == state.pos
+                    and (a[3] or ":") == state.firstc
+                    and (a[4] or "") == state.prompt
+                    and (a[6] or 1) == state.level
+                then
+                    return
+                end
+                -- Every real show (incl. the outer level re-arriving after a nested prompt closes) bumps the
                 -- generation, so a nested hide's scheduled teardown can tell it has been superseded.
                 _show_seq = _show_seq + 1
                 if not _active then
