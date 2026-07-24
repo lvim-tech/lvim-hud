@@ -140,6 +140,15 @@ function M.setup()
     highlight.bind(build) -- the LvimUiChrome* groups (auto re-applied on theme change)
     force_bars()
 
+    -- The chrome BARS are chrome, not "background" content: they must NOT fade when an lvim-ui surface
+    -- backdrop dims/darkens the windows behind a float. Register our group prefix as UNMUTED in the shared
+    -- dim + darken namespaces (both honour `preserve`), so opening any picker leaves the statusline /
+    -- winbar / tabline at full colour while the code behind them dims. Self-registered here — lvim-hud owns
+    -- the `LvimUiChrome*` groups, so no central config needs to know about them.
+    pcall(function()
+        require("lvim-utils.dim").preserve("^LvimUiChrome")
+    end)
+
     local grp = api.nvim_create_augroup("LvimUiChrome", { clear = true })
     api.nvim_create_autocmd("ColorScheme", { group = grp, callback = force_bars })
 
