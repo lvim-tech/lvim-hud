@@ -403,15 +403,33 @@ local function render()
         vim.g.ui_cmdline_pos = { pos[1], pos[2] }
     end
 
-    -- Force an immediate redraw: the initial firstc frame (and the blink toggle on an otherwise-idle screen)
-    -- would appear a keystroke late without it. This is safe for a PASTE now — `schedule_render()` coalesces the
-    -- per-character burst into ONE render, so this flush runs once per burst, not per character.
-    pcall(api.nvim__redraw, { flush = true })
+    -- Flush ONLY the frame that opens the float: that one changes the screen layout, and without it the
+    -- initial firstc frame appears a keystroke late. A later render just marks the float dirty and lets the
+    -- normal redraw cycle paint it — the keystroke that caused it already drives a redraw, so forcing a
+    -- second, FULL-SCREEN flush per character bought nothing and re-ran the incsearch paint underneath a
+    -- `/`/`?` search (see the search-flicker note on `start_blink`).
+    if opened then
+        pcall(api.nvim__redraw, { flush = true })
+    elseif _win and api.nvim_win_is_valid(_win) then
+        pcall(api.nvim__redraw, { win = _win })
+    end
 end
 
 --- Start the cursor blink timer (re-renders, toggling the block cursor).
+---
+--- NOT for a SEARCH prompt. A blink is only visible if the render FORCES a screen flush — an otherwise
+--- idle screen repaints on nothing else — and during `/` or `?` every flush re-runs the incsearch paint
+--- (jump to match + highlight). That is the search flicker: twice a second, with nothing being typed.
+--- (Measured live: `cmdline_show` re-emitted with identical content every ~500ms for as long as the prompt
+--- stayed open, while the window layout never changed once — so it was a repaint storm, not a resize.)
+--- Scoping the redraw to the float does not help: `flush` empties the whole screen regardless of `win`.
+--- A search prompt therefore gets a STEADY caret — the one place where blinking costs a full repaint.
 local function start_blink()
     if _blink then
+        return
+    end
+    if state.firstc == "/" or state.firstc == "?" then
+        _cursor_on = true
         return
     end
     _blink = vim.uv.new_timer()
