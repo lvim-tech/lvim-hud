@@ -12,7 +12,7 @@
 local M = {}
 
 local api = vim.api
-local uv = vim.uv or vim.loop
+local uv = vim.uv
 local colors = require("lvim-utils.colors")
 local config = require("lvim-hud.config")
 local hl = require("lvim-utils.highlight")
