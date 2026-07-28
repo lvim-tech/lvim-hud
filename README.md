@@ -94,7 +94,7 @@ require("lvim-hud").setup({
             segments = nil,
             exclude = {
                 buftype = { "nofile", "prompt", "help", "terminal" },
-                filetype = { "lvim-dashboard", "Outline", "NvimTree", "neo-tree", "toggleterm", "qf", "..." },
+                filetype = { "lvim-dashboard", "lvim-files", "lvim-lsp-outline", "lvim-term", "qf", "..." },
             },
         },
         -- The top tabline. ctx per cell; use engine.click_region(key, fn, text) for clickable window/tab cells.
@@ -104,7 +104,7 @@ require("lvim-hud").setup({
             segments = nil,
             exclude = {
                 buftype = { "nofile", "prompt", "help", "terminal" },
-                filetype = { "lvim-dashboard", "Outline", "NvimTree", "neo-tree", "toggleterm", "qf", "..." },
+                filetype = { "lvim-dashboard", "lvim-files", "lvim-lsp-outline", "lvim-term", "qf", "..." },
             },
         },
         -- The per-line gutter. ctx = { buf, win, lnum, relnum, virtnum }; compose from chrome.gutter + chrome.parts.
@@ -113,7 +113,7 @@ require("lvim-hud").setup({
             segments = nil,
             exclude = {
                 buftype = { "nofile", "prompt", "help", "terminal" },
-                filetype = { "lvim-dashboard", "Outline", "NvimTree", "neo-tree", "toggleterm", "qf", "..." },
+                filetype = { "lvim-dashboard", "lvim-files", "lvim-lsp-outline", "lvim-term", "qf", "..." },
             },
         },
         -- The transient finder/echo overlay: a navigator / the cmdline publishes a title + counter here and the
