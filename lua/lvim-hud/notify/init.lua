@@ -788,7 +788,7 @@ local _hist_timer = nil
 ---@return string
 local function _hist_life(item)
     local icons = (_cfg.history or {}).life_icons
-    if _hide_after() <= 0 or type(icons) ~= "table" or #icons == 0 or not item.expires then
+    if item.dismissed or _hide_after() <= 0 or type(icons) ~= "table" or #icons == 0 or not item.expires then
         return ""
     end
     -- PAUSED (the reader is in the zone): the clocks are frozen, so the glyph freezes with them — it shows the
@@ -811,10 +811,27 @@ end
 ---@param item table
 ---@return boolean
 local function _hist_expired(item)
+    -- DISMISSED wins over everything, the pause included: closing the panel with `q` is the reader saying
+    -- they are done with what is in it. Their clocks are not "paused with time left" any more — leaving them
+    -- running means the next message drags every dismissed one back onto the screen with it, which is what
+    -- `q` was supposed to prevent. (Leaving the zone the other way — stepping UP into the buffer — does not
+    -- dismiss anything, so those countdowns resume exactly where they stopped.)
+    if item.dismissed then
+        return true
+    end
     if _hide_after() <= 0 or _hist_paused_at ~= nil or not item.expires then
         return false
     end
     return uv.now() >= item.expires
+end
+
+--- Retire every message currently in the history from the PASSIVE view — what `q` does. Nothing is deleted:
+--- `:Messages` still browses the whole log (that is what `C` / Clear is for).
+---@return nil
+local function _hist_dismiss_all()
+    for _, item in ipairs(_history) do
+        item.dismissed = true
+    end
 end
 
 local function _append_history(msg, level, opts)
@@ -1222,8 +1239,10 @@ local function _history_zone_lines(filter, live_only, width)
             local cont = _cont_prefix()
             local cw = vim.fn.strdisplaywidth(cont)
             local life = _hist_life(item)
-            -- The life circle rides the right edge, so the text must stop before it (on every row, not just
-            -- the first: a wrapped row running under the circle is exactly the overwrite this avoids).
+            -- The circle is VIRTUAL text pinned to the right edge, not characters appended to the row: it
+            -- then sits at one fixed column whatever the message says (it used to land wherever the text
+            -- happened to end), and a yank of the row never carries it. The text still stops short of it,
+            -- so the two never overlap.
             local reserve = (life ~= "" and width > 0) and (vim.fn.strdisplaywidth(life) + 4) or 0
             local avail = width > 0 and (width - gw - reserve) or 0
             local text = pre .. item.msg
@@ -1231,15 +1250,6 @@ local function _history_zone_lines(filter, live_only, width)
                 or { text:gsub("\n", " ") }
             for j, r in ipairs(rows) do
                 local row = (j == 1 and gutter or cont) .. r
-                -- The LIFE circle rides the RIGHT edge of the message's FIRST row, two columns in — the
-                -- message reads left to right and the time it has left is a margin note, not a prefix.
-                -- Skipped when the text already fills the row (nowhere to put it without overwriting).
-                if j == 1 and life ~= "" and width > 0 then
-                    local pad = width - vim.fn.strdisplaywidth(row) - vim.fn.strdisplaywidth(life) - 2
-                    if pad > 0 then
-                        row = row .. string.rep(" ", pad) .. life .. "  "
-                    end
-                end
                 lines[#lines + 1] = row
                 -- Two tints, the rhythm the config names (`history.tints`): the ROW only hints at its level
                 -- (`row`), while the gutter — the icon and the timestamp — reads as a BADGE at the denser
@@ -1254,6 +1264,13 @@ local function _history_zone_lines(filter, live_only, width)
                     -- text makes the two read as one run of colour.
                     spans[#spans + 1] =
                         { c0 = 0, c1 = math.max(0, #gutter - 1), hl = "LvimUiMsg" .. cap .. "Icon", priority = 100 }
+                    -- The countdown, on the FIRST row of the message and at the panel's right edge: the time
+                    -- a message has left is a margin note, not part of what it says. It wears the badge tint,
+                    -- the same weight as the block on the other side of the row.
+                    if life ~= "" then
+                        spans[#spans + 1] =
+                            { virt = " " .. life .. " ", hl = "LvimUiMsg" .. cap .. "Icon", priority = 300 }
+                    end
                 end
                 hls[#hls + 1] = spans
                 -- Which MESSAGE this display row belongs to. With wrapping, "row N = message N" stops being
@@ -1553,6 +1570,16 @@ local function _history_zone_render(focus)
         render()
         publish()
     end
+    --- Close the panel the way the reader means it: hide it AND retire every countdown in it, so the next
+    --- message arrives on its own instead of towing the batch that was just dismissed. Nothing is deleted —
+    --- `:Messages` still browses the whole log (that is what Clear is for).
+    local function close_panel()
+        _hist_dismissed = true
+        _hist_dismiss_all()
+        _hist_rendered = 0
+        seg:clear()
+        ma.blur()
+    end
     local function clear_all() -- wipe the ENTIRE message history and close (nothing left to browse)
         M.clear()
         _hist_dismissed = true
@@ -1591,10 +1618,7 @@ local function _history_zone_render(focus)
         elseif b.k == "C" then
             clear_all() -- Clear: wipe the whole history and close (nothing left to browse)
         elseif b.k == "q" then
-            _hist_dismissed = true -- closed by the reader: do not let the blur repaint bring it back
-            _hist_rendered = 0
-            seg:clear()
-            ma.blur() -- close
+            close_panel() -- the same close `q` / `<Esc>` do: hide it and retire its countdowns
         end
     end
 
@@ -1604,12 +1628,12 @@ local function _history_zone_render(focus)
             -- `q` is the messages panel's OWN close (a segment key overrides msgarea's generic clear+blur):
             -- it must DISMISS the panel, i.e. mark it closed so the blur repaint below does not immediately
             -- put the messages back on screen — which is what made `q` look like it only hid the title bar.
-            q = function()
-                _hist_dismissed = true
-                _hist_rendered = 0
-                seg:clear()
-                ma.blur()
-            end,
+            q = close_panel,
+            -- `<Esc>` is the zone's generic "leave" — for THIS panel it must mean the same as `q`, because
+            -- the two are the same intent (done reading). A segment key is mapped after the generic one, so
+            -- this wins; without it, escaping left every countdown running and the next message dragged the
+            -- whole batch back on screen. Stepping UP into the buffer (`<C-k>`) still keeps them.
+            ["<Esc>"] = close_panel,
             a = function()
                 refilter(nil)
             end,
