@@ -145,6 +145,10 @@ function M.listable(buf)
     return vim.bo[buf].buftype == "" and vim.bo[buf].modified
 end
 
+---@type table<string, string>  last published `fg|bg` per devicon group — the render path runs constantly,
+--- so the veil publish below happens only when the definition really changed.
+local _devicon_published = {}
+
 --- The file icon for `buf` + a per-extension highlight group carrying its colour on the bar bg. Returns nil
 --- when the buffer is unnamed or the resolved glyph is empty. The icon comes from the configured
 --- `icon_provider` (lvim-icons / nvim-web-devicons / mini.icons, resolved via lvim-utils.icons); the colour
@@ -168,7 +172,21 @@ function M.devicon(buf, bar_bg)
     -- a group name, so nvim_set_hl fails SILENTLY and the invalid chars leak into the `%#…#` statusline token.
     local suffix = (ext ~= "" and ext:gsub("%W", "_")) or "none"
     local group = "LvimUiChromeDevicon_" .. suffix
-    pcall(api.nvim_set_hl, 0, group, { fg = color, bg = bar_bg })
+    -- Publish into the live dim/darken veils too, and ONLY when the definition actually changed — this runs
+    -- on every bar render. A veil namespace is a snapshot taken when it was built, so a group born later
+    -- (this one is created lazily, the first time a bar shows that filetype) is missing from it: with any
+    -- float open the icon's cell stopped matching the bar around it. Registering the `^LvimUiChrome` prefix
+    -- as preserved is not enough on its own — preservation is applied at snapshot time.
+    local stamp = tostring(color) .. "|" .. tostring(bar_bg)
+    if _devicon_published[group] ~= stamp then
+        _devicon_published[group] = stamp
+        pcall(api.nvim_set_hl, 0, group, { fg = color, bg = bar_bg })
+        pcall(function()
+            require("lvim-utils.dim").publish(group)
+        end)
+    else
+        pcall(api.nvim_set_hl, 0, group, { fg = color, bg = bar_bg })
+    end
     return icon, group
 end
 

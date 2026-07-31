@@ -73,6 +73,11 @@ local function hl_group(hl, ctx)
         dyn_n = dyn_n + 1
         name = "LvimUiChromeDyn" .. dyn_n
         pcall(api.nvim_set_hl, 0, name, hl)
+        -- Into any live backdrop veil as well: a veil holds a SNAPSHOT of the preserved groups taken when it
+        -- was built, and these are born at render time — a group created after that is missing from it.
+        pcall(function()
+            require("lvim-utils.dim").publish(name)
+        end)
         dyn_groups[key] = name
     end
     return name

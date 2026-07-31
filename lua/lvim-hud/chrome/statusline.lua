@@ -100,6 +100,13 @@ function M.install_autocmds(grp)
         end,
     })
     api.nvim_create_autocmd("ColorScheme", { group = grp, callback = engine.clear_hl_cache })
+    -- …and on a PALETTE change, which is not the same event. The colorscheme picker's live preview re-applies
+    -- the palette directly — no `ColorScheme` — so the cache kept handing out `LvimUiChromeDyn*` groups
+    -- defined against the theme you were on when the picker opened: the bars kept the OLD colours while
+    -- everything else previewed the new one.
+    pcall(function()
+        require("lvim-utils.colors").on_change(engine.clear_hl_cache)
+    end)
 end
 
 return M

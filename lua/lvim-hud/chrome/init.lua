@@ -94,6 +94,25 @@ local function force_bars()
     highlight.define("TabLine", { bg = bg, fg = c.green })
     highlight.define("TabLineFill", { bg = bg })
     highlight.define("TabLineSel", { bg = c.green, fg = bg, bold = true })
+    -- …and into any LIVE backdrop veil. A veil namespace holds a SNAPSHOT of the preserved groups, taken when
+    -- it was built; the colorscheme picker changes the palette WHILE its own veil is up, and the veil is
+    -- rebuilt before this listener runs — so without republishing, the bars behind the picker keep the
+    -- PREVIOUS theme's colours (the tab boxes turning a foreign hue mid-preview). Ordering-proof: it pushes
+    -- the values that were just defined, whenever this runs.
+    pcall(function()
+        local dim = require("lvim-utils.dim")
+        for _, g in ipairs({
+            "StatusLine",
+            "StatusLineNC",
+            "WinBar",
+            "WinBarNC",
+            "TabLine",
+            "TabLineFill",
+            "TabLineSel",
+        }) do
+            dim.publish(g)
+        end
+    end)
     -- NOTE: the statuscolumn gutter is intentionally NOT forced here — it inherits the colorscheme's own
     -- (dimmed) LineNr / SignColumn / CursorLineNr background, so the gutter stays uniform AND dimmed like
     -- before. The statuscolumn cells use native (no-bg) groups to keep that one continuous gutter bg.
@@ -137,8 +156,31 @@ function M.setup()
     local cfg = config.chrome
 
     -- theming
-    highlight.bind(build) -- the LvimUiChrome* groups (auto re-applied on theme change)
+    -- The LvimUiChrome* groups (auto re-applied on theme change) — and pushed into any live veil on the next
+    -- tick, once `bind` has registered them globally. Same reason as `force_bars` below: a veil built before
+    -- the palette changed still holds the old copies of these preserved groups.
+    highlight.bind(function()
+        local g = build()
+        vim.schedule(function()
+            pcall(function()
+                local dim = require("lvim-utils.dim")
+                for name in pairs(g) do
+                    dim.publish(name)
+                end
+            end)
+        end)
+        return g
+    end)
     force_bars()
+    -- …and the STANDARD bar groups on every PALETTE change, not only on `ColorScheme` (bound below).
+    -- The two are not the same event: a theme applied through `:colorscheme` fires ColorScheme, but the
+    -- colorscheme picker's live PREVIEW re-applies the palette directly — no event — so the bars kept the
+    -- previous theme's colours while `Normal` / `NormalSB` followed the new one. The bars then "jumped" the
+    -- moment the picker committed (that apply DOES go through `:colorscheme`), which reads as the chrome
+    -- changing when the popup closes rather than when the theme does.
+    pcall(function()
+        require("lvim-utils.colors").on_change(force_bars)
+    end)
 
     -- The chrome BARS are chrome, not "background" content: they must NOT fade when an lvim-ui surface
     -- backdrop dims/darkens the windows behind a float. Register our group prefix as UNMUTED in the shared
