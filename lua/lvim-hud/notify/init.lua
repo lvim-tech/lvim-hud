@@ -113,6 +113,21 @@ local _hist_sel = 1 ---@type integer  the focused filter-bar button (l/h move it
 ---@type LvimNotifyHistorySink?
 local _history_sink = nil
 
+--- The prefix a WRAPPED row carries: the editor's own `showbreak` marker, so a message that runs onto
+--- further rows reads exactly like a wrapped line in the command line — the reference the reader
+--- already has. Empty `showbreak` ⇒ a plain indent. Recomputed per render: it is a live option.
+---@return string
+local function _cont_prefix()
+    local brk = vim.trim(vim.o.showbreak or "")
+    return brk ~= "" and ("  " .. brk .. " ") or "    "
+end
+
+--- Display row (0-based, as the zone counts them) → the `_history` index shown there. Rebuilt by
+--- `_history_zone_lines` on every render, because a wrapped message occupies more than one row and the
+--- row → message relation is no longer arithmetic.
+---@type table<integer, integer>
+local _hist_rowmap = {}
+
 --- Register the message-zone sink for `:Messages` history browsing (the msgarea zone). Called by
 --- lvim-msgarea in its setup; keeps notify free of any msgarea dependency.
 ---@param sink LvimNotifyHistorySink
@@ -140,11 +155,21 @@ local function dw(s)
     return vim.fn.strdisplaywidth(tostring(s or ""))
 end
 
-local function wrap(text, limit)
+--- Break `text` into rows of at most `limit` display cells, at word boundaries. `first_limit` (when
+--- given) applies to the FIRST row only — the row that carries a prefix the others do not, so the two
+--- can be filled to different widths in one pass instead of re-flowing afterwards.
+---@param text any
+---@param limit integer
+---@param first_limit integer?
+---@return string[]
+local function wrap(text, limit, first_limit)
     if limit <= 0 then
         return { tostring(text) }
     end
     local lines = {}
+    local function cap()
+        return (#lines == 0 and first_limit) and first_limit or limit
+    end
     -- Split on `\n` with vim.split (NOT gmatch("[^\n]+"), which collapses consecutive newlines) so a
     -- deliberate blank line — e.g. formatted inputlist() / :confirm prompt text — is preserved as an empty row.
     for _, raw in ipairs(vim.split(tostring(text), "\n", { plain = true })) do
@@ -154,7 +179,7 @@ local function wrap(text, limit)
             local line = ""
             for word in raw:gmatch("%S+") do
                 local candidate = line == "" and word or (line .. " " .. word)
-                if dw(candidate) > limit then
+                if dw(candidate) > cap() then
                     if line ~= "" then
                         table.insert(lines, line)
                     end
@@ -1047,8 +1072,9 @@ end
 local _hist_NS = api.nvim_create_namespace("lvim_utils_notify_history")
 
 --- Build lines + highlights for the history popup. Returns them without touching any buffer.
-local function _history_build(filter)
+local function _history_build(filter, width)
     local lines = {}
+    local wrap_on = (_cfg.history or {}).wrap ~= false
     local highlights = {} -- { line, col_start, col_end, group }
     local levels = {} -- per-line level key ("error"/"warn"/"info"/"debug")
 
@@ -1083,16 +1109,28 @@ local function _history_build(filter)
             local badge = "  " .. icon .. "  "
             local badge_b = #badge
             local ts_s = badge_b + 1
-            local msg_flat = item.msg:gsub("\n", " ")
-            local line = badge .. " " .. ts .. "  " .. pre .. msg_flat
+            -- As in the zone: the gutter (icon + timestamp) on the FIRST row, and continuation rows behind
+            -- the `showbreak` marker at the left, using the full width.
+            local gutter = badge .. " " .. ts .. "  "
+            local gw = vim.fn.strdisplaywidth(gutter)
             local msg_s = ts_s + #ts + 2
-            table.insert(lines, line)
-            levels[#lines] = key
-            push_line_hl(TINT[key] or "LvimUiMsgInfo")
-            push_hl("LvimUiMsg" .. cap .. "Icon", 0, badge_b)
-            push_hl("LvimUiFooterLabel", ts_s, ts_s + #ts)
-            -- Message text in the level colour (same hue as the icon).
-            push_hl("LvimUiMsg" .. cap .. "Text", msg_s, #line)
+            local avail = (width or 0) - gw
+            local cont = _cont_prefix()
+            local cw = vim.fn.strdisplaywidth(cont)
+            local rows = (wrap_on and avail > 10) and wrap(pre .. item.msg, math.max(10, (width or 0) - cw), avail)
+                or { (pre .. item.msg):gsub("\n", " ") }
+            for j, r in ipairs(rows) do
+                local line = (j == 1 and gutter or cont) .. r
+                table.insert(lines, line)
+                levels[#lines] = key
+                push_line_hl(TINT[key] or "LvimUiMsgInfo")
+                if j == 1 then
+                    push_hl("LvimUiMsg" .. cap .. "Icon", 0, badge_b)
+                    push_hl("LvimUiFooterLabel", ts_s, ts_s + #ts)
+                end
+                -- Message text in the level colour (same hue as the icon).
+                push_hl("LvimUiMsg" .. cap .. "Text", j == 1 and msg_s or #cont, #line)
+            end
         end
     end
 
@@ -1164,6 +1202,8 @@ local _hist_cap = { info = "Info", warn = "Warn", error = "Error", debug = "Debu
 local function _history_zone_lines(filter, live_only, width)
     local lines, hls = {}, {}
     width = width or 0
+    _hist_rowmap = {}
+    local wrap_on = (_cfg.history or {}).wrap ~= false
     for i = #_history, 1, -1 do
         local item = _history[i]
         local key = LEVEL_KEY[item.level] or "info"
@@ -1172,20 +1212,55 @@ local function _history_zone_lines(filter, live_only, width)
             local ts = os.date("%H:%M:%S", item.time) --[[@as string]]
             local title = item.opts and item.opts.title
             local pre = title and ("[" .. title .. "] ") or ""
-            local body = (icon and icon ~= "" and (icon .. "  ") or "") .. ts .. "  " .. pre .. item.msg:gsub("\n", " ")
-            local row = "  " .. body
-            -- The LIFE circle rides the RIGHT edge of its row, two columns in — the message reads left to
-            -- right and the time it has left is a margin note, not a prefix. Skipped when the text already
-            -- fills the row (there is nowhere to put it that would not overwrite the message).
+            -- The FIRST row carries the gutter — the icon and the timestamp, what the message IS and WHEN.
+            -- Its continuation rows do NOT hang under the text column: they start at the left behind the
+            -- `showbreak` marker and use the full width, the way a wrapped line reads in the command line.
+            -- A hanging indent buys alignment and pays for it in width, which is the wrong trade in a zone
+            -- three rows tall.
+            local gutter = "  " .. (icon and icon ~= "" and (icon .. "  ") or "") .. ts .. "  "
+            local gw = vim.fn.strdisplaywidth(gutter)
+            local cont = _cont_prefix()
+            local cw = vim.fn.strdisplaywidth(cont)
             local life = _hist_life(item)
-            if life ~= "" and width > 0 then
-                local pad = width - vim.fn.strdisplaywidth(row) - vim.fn.strdisplaywidth(life) - 2
-                if pad > 0 then
-                    row = row .. string.rep(" ", pad) .. life .. "  "
+            -- The life circle rides the right edge, so the text must stop before it (on every row, not just
+            -- the first: a wrapped row running under the circle is exactly the overwrite this avoids).
+            local reserve = (life ~= "" and width > 0) and (vim.fn.strdisplaywidth(life) + 4) or 0
+            local avail = width > 0 and (width - gw - reserve) or 0
+            local text = pre .. item.msg
+            local rows = (wrap_on and avail > 10) and wrap(text, math.max(10, width - cw), avail)
+                or { text:gsub("\n", " ") }
+            for j, r in ipairs(rows) do
+                local row = (j == 1 and gutter or cont) .. r
+                -- The LIFE circle rides the RIGHT edge of the message's FIRST row, two columns in — the
+                -- message reads left to right and the time it has left is a margin note, not a prefix.
+                -- Skipped when the text already fills the row (nowhere to put it without overwriting).
+                if j == 1 and life ~= "" and width > 0 then
+                    local pad = width - vim.fn.strdisplaywidth(row) - vim.fn.strdisplaywidth(life) - 2
+                    if pad > 0 then
+                        row = row .. string.rep(" ", pad) .. life .. "  "
+                    end
                 end
+                lines[#lines + 1] = row
+                -- Two tints, the rhythm the config names (`history.tints`): the ROW only hints at its level
+                -- (`row`), while the gutter — the icon and the timestamp — reads as a BADGE at the denser
+                -- `icon` tint. Spans rather than a whole-row group name, so the badge can sit inside the row
+                -- tint instead of replacing it.
+                local cap = _hist_cap[key] or "Info"
+                local spans = { { eol = true, hl = "LvimUiMsg" .. cap, priority = 10 } }
+                if j == 1 then
+                    -- The badge stops ONE cell short of the text, so the gutter's last space wears the row
+                    -- tint instead of the badge's: the block ends, then a gap, then the message — the same
+                    -- breathing room the cmdline's own label box has. Ending the badge flush against the
+                    -- text makes the two read as one run of colour.
+                    spans[#spans + 1] =
+                        { c0 = 0, c1 = math.max(0, #gutter - 1), hl = "LvimUiMsg" .. cap .. "Icon", priority = 100 }
+                end
+                hls[#hls + 1] = spans
+                -- Which MESSAGE this display row belongs to. With wrapping, "row N = message N" stops being
+                -- true, and everything that acts on the row under the cursor (delete one message) would act
+                -- on the wrong one — so the map is built where the rows are.
+                _hist_rowmap[#lines - 1] = i
             end
-            lines[#lines + 1] = row
-            hls[#hls + 1] = "LvimUiMsg" .. (_hist_cap[key] or "Info")
         end
     end
     if #lines == 0 and not live_only then
@@ -1204,6 +1279,12 @@ end
 ---@param filter string?  the active level filter (nil = All)
 ---@return integer?
 local function _hist_index_at(idx, filter)
+    -- The rendered map is the authority: it knows which message each row actually came from, wrapping
+    -- included. The count below is the fallback for a caller that asks before anything was rendered.
+    local mapped = _hist_rowmap[idx]
+    if mapped and _history[mapped] then
+        return mapped
+    end
     local seen = 0
     for i = #_history, 1, -1 do
         local item = _history[i]
@@ -1450,7 +1531,13 @@ local function _history_zone_render(focus)
         local row = (win and api.nvim_win_is_valid(win)) and api.nvim_win_get_cursor(win)[1] or nil
         local delta = #lines - (_hist_rendered or #lines)
         _hist_rendered = #lines
-        seg:set(lines, hls)
+        -- The per-row ITEM ids: which message each row came from. The zone uses them to emphasise the whole
+        -- message under the cursor (a wrapped one spans several rows) while tinting only the row itself.
+        local groups = {}
+        for r = 1, #lines do
+            groups[r] = _hist_rowmap[r - 1]
+        end
+        seg:set(lines, hls, groups)
         if win and row and delta > 0 then
             vim.schedule(function()
                 if api.nvim_win_is_valid(win) then
@@ -1629,7 +1716,15 @@ function M.history()
     local current_levels = {}
     local function rerender()
         if buf_ref and api.nvim_buf_is_valid(buf_ref) then
-            local lines, hls, levels = _history_build(filter)
+            -- The pager's own window width: wrapping has to be measured against what the reader sees.
+            local w = vim.o.columns
+            for _, win in ipairs(api.nvim_list_wins()) do
+                if api.nvim_win_get_buf(win) == buf_ref then
+                    w = api.nvim_win_get_width(win)
+                    break
+                end
+            end
+            local lines, hls, levels = _history_build(filter, w)
             _history_write(buf_ref, lines, hls)
             current_levels = levels or {}
         end

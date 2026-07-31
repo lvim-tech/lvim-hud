@@ -69,9 +69,14 @@ local function build()
     local c = colors
     local b, bg = c.blend, c.bg
     local g = {}
+    -- The two box tints come from the config (`cmdline.tints`), not from literals here: they are the same
+    -- knob the messages panel exposes, and a user who deepens one expects to reach the other.
+    local t = (_cfg and _cfg.tints) or {}
+    local t_text = tonumber(t.text) or 0.1
+    local t_badge = tonumber(t.badge) or 0.26
     local function pair(name, col)
-        g[name] = { fg = col, bg = b(col, bg, 0.1) }
-        g[name .. "Icon"] = { fg = col, bg = b(col, bg, 0.2), bold = true }
+        g[name] = { fg = col, bg = b(col, bg, t_text) }
+        g[name .. "Icon"] = { fg = col, bg = b(col, bg, t_badge), bold = true }
         -- BLOCK cursor: the caret is a highlight ON the char under it (not a glyph), so fill the cell with the
         -- mode colour and draw the char in the editor bg — reverse-style, the char stays readable.
         g[name .. "Caret"] = { fg = bg, bg = col }

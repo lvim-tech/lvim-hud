@@ -219,6 +219,14 @@ M.chrome = {
 ---@type LvimHudCmdlineConfig
 M.cmdline = {
     enable = false,
+    -- Background-tint strength of the cmdline's own two boxes — a blend of the MODE's colour toward the
+    -- background (0 = plain bg, 1 = the pure mode colour). `text` is the field the line is typed in,
+    -- `badge` the label box in front of it, which reads denser so the mode is legible at a glance. The
+    -- messages panel has the same pair (`notify.history.tints`); these were the hardcoded half.
+    tints = {
+        text = 0.1,
+        badge = 0.26,
+    },
     -- Messages routed here (via notify ext_kinds -> "cmdline") are shown in the float.
     -- Configure which kinds in the host's notify.ext_kinds (e.g. lua_print = "cmdline").
     message = {
@@ -402,6 +410,11 @@ M.notify = {
             "\u{f0a9f}",
             "\u{f0a9e}",
         },
+        -- WRAP a message that does not fit the panel onto further rows instead of letting it run off the
+        -- right edge. The first row carries the icon and the timestamp; the continuation rows start at the
+        -- left behind the editor's own `showbreak` marker and use the full width — the way a wrapped line
+        -- reads in the command line. false = one row per message, cut at the edge.
+        wrap = true,
         statusline = true, -- true: publish the title + count to the statusline; false: show the title at the LEFT of the bar
         -- Background-tint strength of the message ROWS themselves — a blend of the LEVEL's colour toward the
         -- background (0 = plain bg, 1 = the pure level colour). The rhythm is body < accent cell < active:
@@ -409,7 +422,7 @@ M.notify = {
         -- thing that must be unmistakable (the hardware cursor is hidden in the panel).
         tints = {
             row = 0.05, -- the whole row (and its text): the level tint you read the panel by
-            icon = 0.1, -- the level icon's cell (bold) — a denser badge beside the row
+            icon = 0.16, -- the level icon's cell (bold) — a denser badge beside the row
             active = 0.2, -- the row under the cursor while you are IN the zone (bold)
         },
         -- The ACCENT each level (and each bar action) is tinted with. A lvim-utils PALETTE KEY (so it tracks
