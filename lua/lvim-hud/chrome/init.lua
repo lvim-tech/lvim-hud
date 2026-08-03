@@ -25,6 +25,28 @@ local WINBAR = "%!v:lua.require'lvim-hud.chrome.winbar'.render()"
 local TABLINE = "%!v:lua.require'lvim-hud.chrome.tabline'.render()"
 local STATUSCOLUMN = "%!v:lua.require'lvim-hud.chrome.statuscolumn'.render()"
 
+--- WCAG contrast ratio between two hex colours, for choosing pill text by
+--- measurement rather than by assumption.
+---@param a string
+---@param b string
+---@return number
+local function contrast(a, b)
+    local function luminance(hex)
+        local n = tonumber(hex:gsub("#", ""), 16)
+        local channels = { math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256 }
+        local weights = { 0.2126, 0.7152, 0.0722 }
+        local sum = 0
+        for i, channel in ipairs(channels) do
+            local v = channel / 255
+            sum = sum + weights[i] * (v <= 0.04045 and v / 12.92 or ((v + 0.055) / 1.055) ^ 2.4)
+        end
+        return sum
+    end
+    local la, lb = luminance(a), luminance(b)
+    local hi, lo = math.max(la, lb), math.min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+end
+
 --- The `LvimUiChrome*` highlight groups, recomputed from the live palette (bound on setup, re-applied on
 --- theme change). Accent fg groups sit on the bar bg; mode pills + tab cells are bg-coloured.
 ---@param palette? table
@@ -32,7 +54,28 @@ local STATUSCOLUMN = "%!v:lua.require'lvim-hud.chrome.statuscolumn'.render()"
 local function build(palette)
     local c = palette or colors
     local bg = c.bg_dark
-    local pill_fg = (vim.o.background == "dark") and c.bg or c.fg
+    -- A mode pill is text ON an accent, so its legibility is a property of THAT
+    -- accent, not of the theme as a whole. One fg for all six pills held only
+    -- while the accents were bright: with the palette softened into
+    -- everforest's register the terminal pill measured 2.81:1 with the dark
+    -- text, where white on the same pill measures 5.38. But white is not the
+    -- answer everywhere either — visual's orange still carries the dark text
+    -- better (4.46 against white's 3.39). So each pill takes whichever of the
+    -- two its own background can actually hold, and the choice re-measures
+    -- itself whenever the palette changes.
+    -- The light candidate is white, not `fg_light`. Measured: `fg_light` is a
+    -- MID grey (#95a3a4 in lvim), and against a softened accent it scores
+    -- 1.30–2.06 — worse than the dark text it was meant to replace. Only a
+    -- near-white clears the pill; anything from the foreground ramp sits at
+    -- the same lightness as the accent and disappears into it.
+    local dark_text = (vim.o.background == "dark") and c.bg or c.fg
+    local light_text = "#ffffff"
+    local function pill_on(accent)
+        if contrast(accent, light_text) > contrast(accent, dark_text) then
+            return light_text
+        end
+        return dark_text
+    end
     local g = {}
     -- accent fg groups (bold), on the bar bg
     local accents = {
@@ -52,12 +95,12 @@ local function build(palette)
     -- bar-coloured (our own group → the colorscheme never overrides it, unlike the global StatusLine group)
     g.LvimUiChromeFill = { fg = c.fg, bg = bg }
     -- mode pills (bg-coloured)
-    g.LvimUiChromeModeN = { bg = c.green, fg = pill_fg, bold = true }
-    g.LvimUiChromeModeI = { bg = c.red, fg = pill_fg, bold = true }
-    g.LvimUiChromeModeV = { bg = c.orange, fg = pill_fg, bold = true }
-    g.LvimUiChromeModeC = { bg = c.purple, fg = pill_fg, bold = true }
-    g.LvimUiChromeModeR = { bg = c.cyan, fg = pill_fg, bold = true }
-    g.LvimUiChromeModeT = { bg = c.blue, fg = pill_fg, bold = true }
+    g.LvimUiChromeModeN = { bg = c.green, fg = pill_on(c.green), bold = true }
+    g.LvimUiChromeModeI = { bg = c.red, fg = pill_on(c.red), bold = true }
+    g.LvimUiChromeModeV = { bg = c.orange, fg = pill_on(c.orange), bold = true }
+    g.LvimUiChromeModeC = { bg = c.purple, fg = pill_on(c.purple), bold = true }
+    g.LvimUiChromeModeR = { bg = c.cyan, fg = pill_on(c.cyan), bold = true }
+    g.LvimUiChromeModeT = { bg = c.blue, fg = pill_on(c.blue), bold = true }
     -- git diff counts
     g.LvimUiChromeGitAdd = { fg = c.git.add, bg = bg }
     g.LvimUiChromeGitChange = { fg = c.git.change, bg = bg }
