@@ -75,7 +75,7 @@ function M.render()
     end
     _cand = fresh
     vim.schedule(function()
-        pcall(vim.cmd, "redrawtabline")
+        pcall(vim.cmd.redrawtabline)
     end)
     return _shown
 end

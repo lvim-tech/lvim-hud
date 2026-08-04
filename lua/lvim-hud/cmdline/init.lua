@@ -391,11 +391,12 @@ local function render()
             border = "none",
             focusable = false,
         }
-    local opened = not (_win and api.nvim_win_is_valid(_win))
-    if opened then
-        _win = api.nvim_open_win(buf, false, win_config)
-    else
+    local opened = false
+    if _win and api.nvim_win_is_valid(_win) then
         api.nvim_win_set_config(_win, win_config)
+    else
+        _win = api.nvim_open_win(buf, false, win_config)
+        opened = true
     end
     api.nvim_set_option_value("winhighlight", "Normal:" .. mode.hl .. ",Search:None,CurSearch:None", { win = _win })
     api.nvim_set_option_value("wrap", true, { win = _win })
@@ -403,9 +404,9 @@ local function render()
     -- Publish the cmdline's screen position so a completion engine (blink.cmp) anchors its menu just
     -- ABOVE the actual command line — wherever it is (the editor bottom, or inside the msgarea zone in
     -- unified mode) — instead of falling back to a fixed editor-bottom popup. `{ row, col }`, 0-based.
-    local ok_pos, pos = pcall(api.nvim_win_get_position, _win)
+    local ok_pos, win_pos = pcall(api.nvim_win_get_position, _win)
     if ok_pos then
-        vim.g.ui_cmdline_pos = { pos[1], pos[2] }
+        vim.g.ui_cmdline_pos = { win_pos[1], win_pos[2] }
     end
 
     -- Flush ONLY the frame that opens the float: that one changes the screen layout, and without it the

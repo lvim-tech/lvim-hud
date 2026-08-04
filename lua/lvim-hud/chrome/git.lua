@@ -157,7 +157,7 @@ function M.start(interval)
                             return
                         end
                         M.update(root)
-                        pcall(vim.cmd, "redrawstatus")
+                        pcall(vim.cmd.redrawstatus)
                     end)
                 end
             end

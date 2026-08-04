@@ -96,7 +96,7 @@ function M.install_autocmds(grp)
         group = grp,
         callback = function()
             git_poller.start((config.chrome.git or {}).poll_ms or 1000)
-            pcall(vim.cmd, "redrawstatus")
+            pcall(vim.cmd.redrawstatus)
         end,
     })
     api.nvim_create_autocmd("ColorScheme", { group = grp, callback = engine.clear_hl_cache })

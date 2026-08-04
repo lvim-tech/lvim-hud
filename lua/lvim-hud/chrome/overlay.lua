@@ -72,7 +72,7 @@ local function ensure_hl()
 end
 
 local function repaint()
-    pcall(vim.cmd, "redrawstatus!")
+    pcall(vim.cmd.redrawstatus, { bang = true })
 end
 
 --- Whether a transient action currently owns the line.

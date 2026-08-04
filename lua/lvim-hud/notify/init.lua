@@ -569,8 +569,8 @@ local function flush_redraw()
     _redraw_pending = true
     vim.schedule(function()
         _redraw_pending = false
-        pcall(vim.cmd, "redraw")
-        pcall(vim.cmd, "redrawstatus")
+        pcall(vim.cmd.redraw)
+        pcall(vim.cmd.redrawstatus)
     end)
 end
 
@@ -1093,7 +1093,7 @@ local function _history_build(filter, width)
     local lines = {}
     local wrap_on = (_cfg.history or {}).wrap ~= false
     local highlights = {} -- { line, col_start, col_end, group }
-    local levels = {} -- per-line level key ("error"/"warn"/"info"/"debug")
+    local line_levels = {} -- per-line level key ("error"/"warn"/"info"/"debug")
 
     local function push_hl(group, col_s, col_e)
         table.insert(highlights, { line = #lines - 1, col_start = col_s, col_end = col_e, group = group })
@@ -1103,12 +1103,6 @@ local function _history_build(filter, width)
     local TINT = { error = "LvimUiMsgError", warn = "LvimUiMsgWarn", info = "LvimUiMsgInfo", debug = "LvimUiMsgDebug" }
     local function push_line_hl(group)
         table.insert(highlights, { line = #lines - 1, line_hl = group })
-    end
-
-    local function push_header(label)
-        local text = "  " .. label
-        table.insert(lines, text)
-        push_hl("LvimUiTitle", 0, #text)
     end
 
     -- notifications
@@ -1139,7 +1133,7 @@ local function _history_build(filter, width)
             for j, r in ipairs(rows) do
                 local line = (j == 1 and gutter or cont) .. r
                 table.insert(lines, line)
-                levels[#lines] = key
+                line_levels[#lines] = key
                 push_line_hl(TINT[key] or "LvimUiMsgInfo")
                 if j == 1 then
                     push_hl("LvimUiMsg" .. cap .. "Icon", 0, badge_b)
@@ -1160,13 +1154,13 @@ local function _history_build(filter, width)
         local badge_b = #badge
         local line = badge .. " No " .. cap .. " records"
         table.insert(lines, line)
-        levels[#lines] = key
+        line_levels[#lines] = key
         push_line_hl(TINT[key] or "LvimUiMsgInfo")
         push_hl("LvimUiMsg" .. cap .. "Icon", 0, badge_b)
         push_hl("LvimUiMsg" .. cap .. "Text", badge_b + 1, #line)
     end
 
-    return lines, highlights, levels
+    return lines, highlights, line_levels
 end
 
 --- Write pre-built lines + highlights into buf.
@@ -1748,9 +1742,9 @@ function M.history()
                     break
                 end
             end
-            local lines, hls, levels = _history_build(filter, w)
+            local lines, hls, line_levels = _history_build(filter, w)
             _history_write(buf_ref, lines, hls)
-            current_levels = levels or {}
+            current_levels = line_levels or {}
         end
     end
 
@@ -1862,7 +1856,7 @@ local function _attach_ui()
 
     vim.ui_attach(ns, { ext_messages = true }, function(event, ...)
         if event == "msg_show" then
-            local kind, content, _replace = ...
+            local kind, content = ...
 
             -- capture args before scheduling (varargs don't survive yield)
             local text_raw = _fragments_to_text(content)
