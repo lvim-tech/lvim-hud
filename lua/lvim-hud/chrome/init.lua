@@ -225,11 +225,10 @@ function M.setup()
         require("lvim-utils.colors").on_change(force_bars)
     end)
 
-    -- The chrome BARS are chrome, not "background" content: they must NOT fade when an lvim-ui surface
-    -- backdrop dims/darkens the windows behind a float. Register our group prefix as UNMUTED in the shared
-    -- dim + darken namespaces (both honour `preserve`), so opening any picker leaves the statusline /
-    -- winbar / tabline at full colour while the code behind them dims. Self-registered here — lvim-hud owns
-    -- the `LvimUiChrome*` groups, so no central config needs to know about them.
+    -- Declare the chrome BARS as chrome with the shared dim module. Since lvim-utils d3ecb71 a veil covers
+    -- the chrome too (only `data = true` registrations survive it), so this changes nothing on screen —
+    -- the bars recede with the editor behind a float. The registration stays as the record that
+    -- `LvimUiChrome*` is furniture, owned here, should the veil policy ever exempt chrome again.
     pcall(function()
         require("lvim-utils.dim").preserve("^LvimUiChrome")
     end)
