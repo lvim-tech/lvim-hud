@@ -90,6 +90,10 @@ local PANEL_ORDER = {
 local _cfg = config.notify
 local _history = {}
 local _printers = {}
+-- The editor's own `print`, kept from the first override on. `print` is a GLOBAL: without a copy the
+-- option could be switched on but never off, and nothing in the session could reach the real print
+-- again.
+local _print_original = nil ---@type function?
 -- The unified history-zone view's state, PERSISTED across the passive live render and the focused browse (so a
 -- new message arriving while you browse keeps your filter, and the focus save/restore is not clobbered).
 local _hist_filter = nil ---@type string?
@@ -2052,6 +2056,7 @@ function M.setup(user_cfg)
     end
 
     if _cfg.override_print then
+        _print_original = _print_original or print
         print = function(...)
             local parts = {}
             for i = 1, select("#", ...) do
@@ -2059,6 +2064,10 @@ function M.setup(user_cfg)
             end
             _dispatch(table.concat(parts, "\t"), levels.DEBUG, { title = "print" })
         end
+    elseif _print_original then
+        -- Turned back off: hand the editor its own print back.
+        print = _print_original
+        _print_original = nil
     end
 
     if _cfg.ext_messages then
