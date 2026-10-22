@@ -7,11 +7,16 @@
 
 local notify = require("lvim-hud.notify")
 
---- Run `fn` with the real print restored afterwards whatever happens.
+--- Run `fn` with no override in place to begin with, and whatever `print` was before restored
+--- afterwards. The baseline spec calls setup() first and the option is ON by default, so a case
+--- that assumed a pristine global would be comparing one override against another — which is how
+--- this helper got written wrong the first time.
 ---@param fn fun()
 local function with_print(fn)
     local saved = print
+    notify.setup({ override_print = false, ext_messages = false })
     local ok, err = pcall(fn)
+    notify.setup({ override_print = false, ext_messages = false })
     print = saved
     if not ok then
         error(err, 0)
