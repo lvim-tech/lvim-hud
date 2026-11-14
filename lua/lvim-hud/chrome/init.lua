@@ -257,6 +257,11 @@ function M.setup()
         -- nofile backdrop) would collapse it and hide which tab you are on. The dashboard case (a lone tab with
         -- no real file) still hides.
         local target = (has_real or #api.nvim_list_tabpages() > 1) and (cfg.tabline.showtabline or 2) or 0
+        -- A Neovim embedded as the lvim-fuzzy preview (it sets g:lvim_fuzzy_preview) shows ONE file under the
+        -- finder's own file bar: the tabline would only repeat that name, so it stays hidden there.
+        if vim.g.lvim_fuzzy_preview then
+            target = 0
+        end
         if vim.o.showtabline ~= target then
             vim.o.showtabline = target
         end
