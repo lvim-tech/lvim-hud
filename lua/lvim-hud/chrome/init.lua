@@ -161,6 +161,13 @@ local function force_bars()
     -- before. The statuscolumn cells use native (no-bg) groups to keep that one continuous gutter bg.
 end
 
+--- A Neovim embedded as the lvim-fuzzy preview (it sets g:lvim_fuzzy_preview): it shows ONE file under the
+--- finder's own file bar, so the bars that name the file (tabline, winbar, statusline) would only repeat it.
+---@return boolean
+local function preview_instance()
+    return vim.g.lvim_fuzzy_preview ~= nil
+end
+
 --- Apply (or clear) the winbar + statuscolumn for one window, honouring the exclusion lists.
 ---@param win integer
 local function apply_window(win)
@@ -175,7 +182,7 @@ local function apply_window(win)
     -- avoids needless flicker on every WinEnter. On an EXCLUDED window we clear ONLY our own winbar /
     -- statuscolumn — never wipe a foreign one the window set itself (e.g. neo-tree's source-selector winbar).
     if cfg.winbar.enabled then
-        if not (float or parts.excluded(buf, "winbar")) then
+        if not (float or preview_instance() or parts.excluded(buf, "winbar")) then
             if vim.wo[win].winbar ~= WINBAR then
                 vim.wo[win].winbar = WINBAR
             end
@@ -257,9 +264,7 @@ function M.setup()
         -- nofile backdrop) would collapse it and hide which tab you are on. The dashboard case (a lone tab with
         -- no real file) still hides.
         local target = (has_real or #api.nvim_list_tabpages() > 1) and (cfg.tabline.showtabline or 2) or 0
-        -- A Neovim embedded as the lvim-fuzzy preview (it sets g:lvim_fuzzy_preview) shows ONE file under the
-        -- finder's own file bar: the tabline would only repeat that name, so it stays hidden there.
-        if vim.g.lvim_fuzzy_preview then
+        if preview_instance() then
             target = 0
         end
         if vim.o.showtabline ~= target then
@@ -297,7 +302,9 @@ function M.setup()
         -- target loads after setup() resolves to `{}` at setup time, so installing then would register NO
         -- invalidation autocmds and the named+`events` segments would cache stale forever.
         M.statusline.install_autocmds(grp)
-        if cfg.statusline.enabled then
+        if preview_instance() then
+            vim.o.laststatus = 0
+        elseif cfg.statusline.enabled then
             vim.o.statusline = STATUSLINE
         end
         if cfg.tabline.enabled then
