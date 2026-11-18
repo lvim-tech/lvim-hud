@@ -136,7 +136,7 @@ require("lvim-hud").setup({
             folder = "󰉖", -- cwd
             git = "", -- branch
             commit = "", -- hunk position
-            separator = "➤", -- breadcrumb / sequence separator
+            separator = "󰅂", -- breadcrumb / sequence separator
             lock = "", -- readonly
             save = "", -- modified
             vline = "▌", -- statuscolumn git gutter bar
