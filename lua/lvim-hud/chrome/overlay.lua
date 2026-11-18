@@ -97,8 +97,27 @@ function M.line()
     end
     local parts = {}
     if state.icon and state.icon ~= "" then
-        parts[#parts + 1] =
-            seg(state.icon_hl or "LvimUiStatusTitleIcon", state.icon, cfg.icon_pad_left or 0, cfg.icon_pad_right or 1)
+        local ihl = state.icon_hl or "LvimUiStatusTitleIcon"
+        -- the icon as its lvim-icons IMAGE where UI icons are images ("material"), on the badge's background;
+        -- the image cells carry no `%`, so they go in as they are
+        local ok, iconlib = pcall(require, "lvim-utils.icons")
+        local t, h, img
+        if ok and iconlib.ui_text then
+            t, h, img = iconlib.ui_text(state.icon, ihl)
+        end
+        if img then
+            local l, r = cfg.icon_pad_left or 0, cfg.icon_pad_right or 1
+            parts[#parts + 1] = ("%%#%s#%s%%#%s#%s%%#%s#%s%%*"):format(
+                ihl,
+                string.rep(" ", l),
+                iconlib.on_bg({ image = true, hl = h }, ihl) or h,
+                t,
+                ihl,
+                string.rep(" ", r)
+            )
+        else
+            parts[#parts + 1] = seg(ihl, state.icon, cfg.icon_pad_left or 0, cfg.icon_pad_right or 1)
+        end
     end
     if state.title and state.title ~= "" then
         parts[#parts + 1] =

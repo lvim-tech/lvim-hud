@@ -65,6 +65,23 @@ end
 
 --- Highlight groups: base = text area (light tint), <base>Icon = badge (stronger tint).
 ---@return table<string, table>
+
+--- A mode / title glyph as its lvim-icons IMAGE where UI icons are images ("material"): the image cells and
+--- their group on the background of `group`. The glyph and nil elsewhere.
+---@param icon string
+---@param group string
+---@return string text, string? img_hl
+local function icon_cells(icon, group)
+    local ok, iconlib = pcall(require, "lvim-utils.icons")
+    if not (ok and iconlib.ui_text) or not icon or icon == "" then
+        return icon or "", nil
+    end
+    local t, h, img = iconlib.ui_text(icon, group)
+    if not img then
+        return icon, nil
+    end
+    return t, iconlib.on_bg({ image = true, hl = h }, group) or h
+end
 local function build()
     local c = colors
     local b, bg = c.blend, c.bg
@@ -186,7 +203,7 @@ local function render()
     -- Left panel = icon + a label. For the input mode the live prompt ("New name: ")
     -- wins; otherwise the per-mode static label ("Command", "Search ↓", …).
     local label = (prompt ~= "" and prompt) or (mode.label or "")
-    local badge
+    local badge, badge_chunks
     -- Publish to the statusline only when the global echo model is on (config.chrome.overlay.enabled) AND this
     -- cmdline opts in (cmdline.statusline). Either off ⇒ the float keeps its own mode badge.
     local to_statusline = status.is_enabled() and _cfg.statusline ~= false
@@ -236,7 +253,12 @@ local function render()
         if label ~= "" then
             label = label:gsub("%s+$", "") .. "  "
         end
-        badge = lpad .. mode.glyph .. rpad .. label
+        local ig = mode.hl .. "Icon"
+        local t, img_hl = icon_cells(mode.glyph, ig)
+        badge = lpad .. t .. rpad .. label
+        if img_hl then
+            badge_chunks = { { lpad, ig }, { t, img_hl }, { rpad .. label, ig } }
+        end
     end
     local badge_w = vim.fn.strdisplaywidth(badge)
     -- One extra cell after the panel so the input text is not glued to the box (>= 1 when there is no badge).
@@ -299,7 +321,7 @@ local function render()
 
     -- Left panel (icon + prompt label) overlaying the reserved leading cells.
     api.nvim_buf_set_extmark(buf, _ns, cmd_row, 0, {
-        virt_text = { { badge, mode.hl .. "Icon" } },
+        virt_text = badge_chunks or { { badge, mode.hl .. "Icon" } },
         virt_text_pos = "overlay",
     })
 
@@ -697,9 +719,11 @@ end
 function render_message(msg)
     local m = (_cfg and _cfg.message) or {}
     local hl = m.hl or "LvimUiCmdlineInput"
-    local badge = string.rep(" ", _cfg.badge_pad_left or 2)
-        .. (m.glyph or "")
-        .. string.rep(" ", _cfg.badge_pad_right or 2)
+    local lp, rp = string.rep(" ", _cfg.badge_pad_left or 2), string.rep(" ", _cfg.badge_pad_right or 2)
+    local glyph_t, glyph_img = icon_cells(m.glyph or "", hl .. "Icon")
+    local badge = lp .. glyph_t .. rp
+    local badge_chunks = glyph_img and { { lp, hl .. "Icon" }, { glyph_t, glyph_img }, { rp, hl .. "Icon" } }
+        or { { badge, hl .. "Icon" } }
     local badge_w = vim.fn.strdisplaywidth(badge)
     local pad = string.rep(" ", badge_w + 1)
 
@@ -712,7 +736,7 @@ function render_message(msg)
     api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     api.nvim_buf_clear_namespace(buf, _ns, 0, -1)
     api.nvim_buf_set_extmark(buf, _ns, 0, 0, {
-        virt_text = { { badge, hl .. "Icon" } },
+        virt_text = badge_chunks,
         virt_text_pos = "overlay",
     })
     for r = 0, #lines - 1 do
@@ -838,10 +862,18 @@ function M.pager(opts)
     if tc_ok and ui_util.title_case then
         title_text = ui_util.title_case(title_text)
     end
-    local title = {
-        { "  " .. icon .. "  ", "LvimUiCmdlineCommandIcon" },
-        { " " .. title_text, "LvimUiCmdlineCommand" },
-    }
+    local icon_t, icon_img = icon_cells(icon, "LvimUiCmdlineCommandIcon")
+    local title = icon_img
+            and {
+                { "  ", "LvimUiCmdlineCommandIcon" },
+                { icon_t, icon_img },
+                { " ", "LvimUiCmdlineCommandIcon" }, -- an image takes two cells: one blank less keeps the box
+                { " " .. title_text, "LvimUiCmdlineCommand" },
+            }
+        or {
+            { "  " .. icon .. "  ", "LvimUiCmdlineCommandIcon" },
+            { " " .. title_text, "LvimUiCmdlineCommand" },
+        }
     local btns = {}
     for key, km in pairs(opts.keymaps or {}) do
         btns[#btns + 1] = { key = key, label = km.label or key, badge = km.badge, label_hl = km.label_hl }

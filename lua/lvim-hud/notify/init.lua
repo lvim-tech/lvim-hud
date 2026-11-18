@@ -121,6 +121,24 @@ local _history_sink = nil
 --- further rows reads exactly like a wrapped line in the command line — the reference the reader
 --- already has. Empty `showbreak` ⇒ a plain indent. Recomputed per render: it is a live option.
 ---@return string
+
+--- A level / progress icon as its lvim-icons IMAGE where UI icons are images ("material"): the image cells and
+--- their group on the background of `group` (the cell it sits in). The glyph and nil elsewhere.
+---@param icon string
+---@param group string
+---@return string text, string? img_hl
+local function icon_cells(icon, group)
+    local ok, iconlib = pcall(require, "lvim-utils.icons")
+    if not (ok and iconlib.ui_text) then
+        return icon, nil
+    end
+    local t, h, img = iconlib.ui_text(icon, group)
+    if not img then
+        return icon, nil
+    end
+    return t, iconlib.on_bg({ image = true, hl = h }, group) or h
+end
+
 local function _cont_prefix()
     local brk = vim.trim(vim.o.showbreak or "")
     return brk ~= "" and ("  " .. brk .. " ") or "    "
@@ -283,6 +301,8 @@ local function _rebuild_panel(level, win_w)
         name = name .. "s"
     end
 
+    local icon_img_hl
+    icon, icon_img_hl = icon_cells(icon, header_hl)
     local hdr = pad_s .. icon .. " " .. name
     local fill = win_w - dw(hdr)
     if fill > 0 then
@@ -349,6 +369,9 @@ local function _rebuild_panel(level, win_w)
         hl_eol = true,
         priority = 200,
     })
+    if icon_img_hl then
+        set_col_mark(0, #pad_s, { end_col = #pad_s + #icon, hl_group = icon_img_hl, priority = 201 })
+    end
 
     -- Tint the whole content body (every row below the header bar) one level — the
     -- separator and title marks layer their fg on top. Only when a matching Body group
@@ -465,6 +488,8 @@ local function _render_prog_channel(id, win_w)
     local hdr_icon = ch.icon or (_cfg.icons or {}).progress or ""
     local hdr_name = ch.name or tostring(id)
     local hdr_hl = ch.header_hl or "LvimNotifyHeaderInfo"
+    local hdr_img_hl
+    hdr_icon, hdr_img_hl = icon_cells(hdr_icon, hdr_hl)
     local hdr_text = pad_s .. hdr_icon .. " " .. hdr_name
     local hdr_fill = win_w - dw(hdr_text)
     if hdr_fill > 0 then
@@ -474,6 +499,9 @@ local function _render_prog_channel(id, win_w)
     -- col_marks format: { row, col_start, col_end_bytes, hl_group, hl_eol? }
     local all_lines = { hdr_text }
     local col_marks = { { 0, 0, #hdr_text, hdr_hl, true } }
+    if hdr_img_hl then
+        col_marks[#col_marks + 1] = { 0, #pad_s, #pad_s + #hdr_icon, hdr_img_hl }
+    end
     local row_offset = 1
 
     for _, l in ipairs(ch.lines) do
@@ -1121,7 +1149,9 @@ local function _history_build(filter, width)
             local pre = title and ("[" .. title .. "] ") or ""
             -- Icon badge at column 0 (`  icon  `), aligned directly under the title's icon box
             -- (2 spaces each side). One plain gap cell, then the timestamp, then the message.
-            local badge = "  " .. icon .. "  "
+            local icon_t, icon_img = icon_cells(icon, "LvimUiMsg" .. cap .. "Icon")
+            -- an image takes two cells: one blank less after it keeps the gutter's width
+            local badge = "  " .. icon_t .. (icon_img and " " or "  ")
             local badge_b = #badge
             local ts_s = badge_b + 1
             -- As in the zone: the gutter (icon + timestamp) on the FIRST row, and continuation rows behind
@@ -1141,6 +1171,9 @@ local function _history_build(filter, width)
                 push_line_hl(TINT[key] or "LvimUiMsgInfo")
                 if j == 1 then
                     push_hl("LvimUiMsg" .. cap .. "Icon", 0, badge_b)
+                    if icon_img then
+                        push_hl(icon_img, 2, 2 + #icon_t)
+                    end
                     push_hl("LvimUiFooterLabel", ts_s, ts_s + #ts)
                 end
                 -- Message text in the level colour (same hue as the icon).
@@ -1154,13 +1187,17 @@ local function _history_build(filter, width)
         local key = filter or "info"
         local cap = key:sub(1, 1):upper() .. key:sub(2)
         local icon = (_cfg.icons or {})[key] or " "
-        local badge = "  " .. icon .. "  "
+        local icon_t, icon_img = icon_cells(icon, "LvimUiMsg" .. cap .. "Icon")
+        local badge = "  " .. icon_t .. (icon_img and " " or "  ")
         local badge_b = #badge
         local line = badge .. " No " .. cap .. " records"
         table.insert(lines, line)
         line_levels[#lines] = key
         push_line_hl(TINT[key] or "LvimUiMsgInfo")
         push_hl("LvimUiMsg" .. cap .. "Icon", 0, badge_b)
+        if icon_img then
+            push_hl(icon_img, 2, 2 + #icon_t)
+        end
         push_hl("LvimUiMsg" .. cap .. "Text", badge_b + 1, #line)
     end
 
