@@ -292,6 +292,14 @@ function M.new(opts)
                 end)
             end
         end
+        -- A live lvim-icons mode switch changes how every icon is drawn: rebuild every cached segment.
+        api.nvim_create_autocmd("User", {
+            group = grp,
+            pattern = "LvimIconsMode",
+            callback = function()
+                self.invalidate()
+            end,
+        })
     end
 
     return self
