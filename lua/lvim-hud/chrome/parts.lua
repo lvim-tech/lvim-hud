@@ -103,6 +103,34 @@ function M.seg(suffix, text)
     return "%#LvimUiChrome" .. suffix .. "#" .. text .. "%*"
 end
 
+--- A UI glyph for text painted with `seg(suffix, …)`: the glyph itself — or, in lvim-icons "material" mode,
+--- an image of it in the segment's colour on the segment's background, as a fragment that returns to the
+--- segment's group after it. Embed the result in the `seg` text where the glyph was.
+---@param glyph string
+---@param suffix string  the `seg` group suffix ("Blue", "Red", …)
+---@return string
+function M.ui(glyph, suffix)
+    if not glyph or glyph == "" then
+        return glyph or ""
+    end
+    local ok, iconlib = pcall(require, "lvim-utils.icons")
+    if not (ok and iconlib.ui and iconlib.on_bg) then
+        return glyph
+    end
+    local group = "LvimUiChrome" .. suffix
+    local r = iconlib.ui({ glyph = glyph, hl = group })
+    if not r.image then
+        return glyph
+    end
+    -- on the background the segment's group SHOWS — named after the group, so a cached segment stays valid
+    -- across themes (lvim-utils.icons re-derives it on every :colorscheme / palette change)
+    local img = iconlib.on_bg(r, group)
+    if not img then
+        return glyph
+    end
+    return "%#" .. img .. "#" .. r.glyph .. "%#" .. group .. "#"
+end
+
 --- The live chrome config.
 ---@return table
 function M.cfg()
@@ -167,6 +195,13 @@ function M.devicon(buf, bar_bg)
     local icon, color = r.glyph, r.color
     if not icon or icon == "" then
         return nil
+    end
+    -- An IMAGE icon (lvim-icons svg mode): its group's foreground is the terminal image id, not a colour —
+    -- keep the id and only add the bar background.
+    -- the bar's own fill group carries the bar background (`bar_bg`): named after it, re-derived per theme
+    local img_group = iconlib.on_bg(r, "LvimUiChromeFill")
+    if img_group then
+        return icon, img_group
     end
     -- Sanitise the extension into a valid highlight-group suffix: a non-word char (`c++`, `d-`) is illegal in
     -- a group name, so nvim_set_hl fails SILENTLY and the invalid chars leak into the `%#…#` statusline token.
