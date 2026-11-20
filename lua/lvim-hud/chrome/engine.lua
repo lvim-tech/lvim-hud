@@ -203,6 +203,8 @@ function M.new(opts)
     local dirty = {}
     ---@type integer?                the buffer the `buf` segments were built for
     local cache_buf = nil
+    ---@type string?                 the mode (`mode(1)`) the `ModeChanged` segments were built in
+    local cache_mode = nil
 
     local self = {}
 
@@ -245,6 +247,18 @@ function M.new(opts)
             cache_buf = ctx.buf
             for _, spec in ipairs(segs) do
                 if spec.buf and spec.name then
+                    dirty[spec.name] = true
+                end
+            end
+        end
+        -- The mode is compared on every render, not only trusted to `ModeChanged`: Neovim does not fire it when
+        -- insert mode ends because a mapping called `stopinsert` and moved to another window (a picker's <Esc>
+        -- from its query to its list) — the bar kept saying INSERT, in the insert accent, on the list.
+        local mode = vim.fn.mode(1)
+        if mode ~= cache_mode then
+            cache_mode = mode
+            for _, spec in ipairs(segs) do
+                if spec.name and type(spec.events) == "table" and vim.tbl_contains(spec.events, "ModeChanged") then
                     dirty[spec.name] = true
                 end
             end
