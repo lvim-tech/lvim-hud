@@ -190,7 +190,14 @@ local function apply_window(win)
             vim.wo[win].winbar = ""
         end
     end
-    if cfg.statuscolumn.enabled then
+    if preview_instance() then
+        -- the Neovim a finder embeds as its preview shows the file's text only: no numbers, signs or fold column to the
+        -- left of it and no cursor line (the finder draws its own bar of the lines shown above the text)
+        vim.wo[win].statuscolumn = ""
+        vim.wo[win].number, vim.wo[win].relativenumber = false, false
+        vim.wo[win].cursorline, vim.wo[win].cursorcolumn = false, false
+        vim.wo[win].signcolumn, vim.wo[win].foldcolumn = "no", "0"
+    elseif cfg.statuscolumn.enabled then
         if not (float or parts.excluded(buf, "statuscolumn")) then
             if vim.wo[win].statuscolumn ~= STATUSCOLUMN then
                 vim.wo[win].statuscolumn = STATUSCOLUMN
